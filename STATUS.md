@@ -1,11 +1,12 @@
 # Status
 
-- **Current step**: Step 5 completed (`render` wiggle renderer: pure path/polygon output, positive/negative/both variable-area fill with interpolated zero crossings, line-only mode, excursion scale and clipping, vertical min/max decimation to <=2 points/pixel when dense, fast scanline RGBA rasterizer, unit tests including sample file, and criterion benchmark).
+- **Current step**: Step 6 completed (`render` viewport model: independent H/V pan+zoom, time window in ms, trace decimation, `1-2-5 × 10^k` time/trace/header axis tick computation, cursor readout, and auto-switch `Wiggle -> Image` when traces `< ~2.0` px apart; pure and unit tested).
 - **Completed steps**:
   - Step 1: Workspace scaffold (`segy-core`, `render`, `app`), `gate.sh`, `.gitignore` (`target/`, `refs/`, `.toolchain/`, `*.sgy`), `git init`.
   - Step 2: `segy-core` parser & unit tests.
   - Step 3: `render` amplitude pipeline & unit tests.
   - Step 4: `render` image renderer, colormap LUTs, unit tests, and criterion benchmark.
   - Step 5: `render` wiggle renderer, variable-area polygon builder, vertical min/max decimation, fast rasterizer, unit tests, and criterion benchmark.
-- **Next step**: Step 6 (`render` viewport model: independent H/V pan+zoom, time window, trace decimation, axis tick computation, auto-switch wiggle->image when traces <~2px apart; pure and unit tested).
+  - Step 6: `render` viewport model (pan/zoom, time window, trace decimation, axis ticks, auto-switch wiggle->image) & unit tests.
+- **Next step**: Step 7 (`app` egui UI: open file dialog `rfd`, mode toggle Wiggle/Image/Overlay, gain & clip sliders, colormap pick, interactive pan/zoom/axes, and offscreen Save PNG).
 - **Open issues**: None.

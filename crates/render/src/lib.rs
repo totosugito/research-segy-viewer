@@ -14,6 +14,7 @@ pub mod amplitude;
 pub mod colormap;
 pub mod error;
 pub mod image;
+pub mod viewport;
 pub mod wiggle;
 
 pub use amplitude::{
@@ -31,6 +32,10 @@ pub use image::{
     DecimationMode, ImageRenderParams, ImageRenderer, ImageViewport, MAX_VIEWPORT_DIMENSION,
     RenderedImage, SliceTraceSource, TraceDataSource, render_image, render_image_into,
     resample_trace_vertical_into, sample_bin_minmax, select_decimated_amplitude,
+};
+pub use viewport::{
+    AxisTick, CursorReadout, DEFAULT_AUTO_SWITCH_TRACE_SPACING_PX, DisplayMode, SectionDataBounds,
+    SeismicViewport, compute_linear_ticks, nice_step_size,
 };
 pub use wiggle::{
     LobePolarity, Point2f, TraceWiggleGeometry, WiggleFillMode, WigglePolygon, WiggleRenderParams,
