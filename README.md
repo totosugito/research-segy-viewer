@@ -2,14 +2,20 @@
 
 Read-only SEG-Y (rev 0/1) viewer in Rust + egui, focused on **drawing**: wiggle, image (variable density) and overlay. No header editing, no writing, no processing beyond display gain/AGC.
 
-## Run
+## Build and run on a new computer
+Requirements: Rust stable (>= 1.80) via [rustup](https://rustup.rs), a C linker (`build-essential`), and on Linux the GUI libs (`libx11-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev libvulkan-dev`). For videos: `ffmpeg`.
 ```bash
-export PATH=$PWD/.toolchain/cargo/bin:$PATH RUSTUP_HOME=$PWD/.toolchain/rustup CARGO_HOME=$PWD/.toolchain/cargo   # project-local Rust
-cargo run --release -p app -- file.sgy          # GUI (no file: open dialog)
-cargo run --release -p app -- file.sgy --demo   # live captioned demo in the real window
-./gate.sh                                       # fmt + clippy -D warnings + all tests
-cargo bench -p render                           # performance (release profile)
+git clone https://github.com/totosugito/research-segy-viewer.git
+cd research-segy-viewer
+cargo build --release -p app
+./target/release/app file.sgy           # GUI (no file: open dialog)
+./target/release/app file.sgy --demo    # live captioned demo in the real window
+./gate.sh                               # fmt + clippy -D warnings + all tests
+cargo bench -p render                   # performance (release profile)
 ```
+Only source is in git. Not committed (recreate locally): `target/` (build output), `.toolchain/` (optional project-local Rust; `gate.sh` uses it if present, otherwise system cargo), `refs/` (demo videos, reference captures), `*.sgy` data.
+
+**Sample data:** no SEG-Y file is included. Some tests/demos look for `/home/toto/Downloads/3X_75_PR.SGY` and **silently skip** when it is missing (see ISSUES.md #2), so on another machine a green gate does not exercise the file-based tests. Put any 2D/3D SEG-Y at that path or edit the `SAMPLE_SEGY_PATH`/`DEFAULT_SGY` constants.
 
 ## Features (status = what has been checked, see docs/TESTING.md)
 | Area | Feature | Checked by |

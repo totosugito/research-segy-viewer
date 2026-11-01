@@ -5,3 +5,12 @@
 *.SGY
 *.segy
 *.SEGY
+# generated / local-only
+*.mp4
+*.png
+*.webm
+*.gif
+/.agy/
+/.antigravity/
+*.log
+.DS_Store
