@@ -11,5 +11,8 @@ thiserror.workspace = true
 eframe.workspace = true
 rfd.workspace = true
 
+[dev-dependencies]
+egui_kittest.workspace = true
+
 [lints]
 workspace = true

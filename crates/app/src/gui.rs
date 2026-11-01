@@ -151,7 +151,7 @@ impl SegyViewerApp {
             }
 
             ui.separator();
-            ui.label("Colormap:");
+            let cmap_label = ui.label("Colormap:");
             let current_cmap = self.controller.render_params().colormap.kind;
             egui::ComboBox::from_id_salt("top_colormap_combo")
                 .selected_text(current_cmap.label())
@@ -164,7 +164,9 @@ impl SegyViewerApp {
                             self.controller.set_colormap_kind(kind);
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(cmap_label.id);
         });
     }
 
@@ -186,13 +188,18 @@ impl SegyViewerApp {
 
         let mut gain_db = amp.gain_db;
         ui.horizontal(|ui| {
-            ui.label("Gain (dB):");
+            ui.label("Gain:");
             if ui.small_button("0 dB").clicked() {
                 gain_db = 0.0;
+                self.controller.set_gain_db(0.0);
             }
         });
         if ui
-            .add(egui::Slider::new(&mut gain_db, -40.0..=40.0).step_by(0.5))
+            .add(
+                egui::Slider::new(&mut gain_db, -40.0..=40.0)
+                    .step_by(0.5)
+                    .text("Gain (dB)"),
+            )
             .changed()
         {
             self.controller.set_gain_db(gain_db);
@@ -243,9 +250,9 @@ impl SegyViewerApp {
             ui.label("Balance:");
             for (bal, name) in [
                 (TraceBalance::Off, "Off"),
-                (TraceBalance::Rms, "RMS"),
+                (TraceBalance::Rms, "RMS Bal"),
                 (TraceBalance::MeanAbs, "MeanAbs"),
-                (TraceBalance::Peak, "Peak"),
+                (TraceBalance::Peak, "Peak Bal"),
             ] {
                 if ui
                     .selectable_label(amp.trace_balance == bal, name)
@@ -378,7 +385,7 @@ impl SegyViewerApp {
 
         let mut auto_sw = self.controller.viewport().auto_switch_wiggle_to_image();
         if ui
-            .checkbox(&mut auto_sw, "Auto-switch Wiggle→Image (<2 px)")
+            .checkbox(&mut auto_sw, "Auto-switch Wiggle -> Image (<2 px)")
             .changed()
         {
             self.controller.set_auto_switch_wiggle_to_image(auto_sw);
@@ -394,7 +401,7 @@ impl SegyViewerApp {
             .map_or("Custom", |(_, l)| *l);
 
         ui.horizontal(|ui| {
-            ui.label("X-Axis:");
+            let xaxis_label = ui.label("X-Axis:");
             egui::ComboBox::from_id_salt("xaxis_key_combo")
                 .selected_text(current_label)
                 .show_ui(ui, |ui| {
@@ -403,7 +410,9 @@ impl SegyViewerApp {
                             self.controller.set_horizontal_axis_key(key);
                         }
                     }
-                });
+                })
+                .response
+                .labelled_by(xaxis_label.id);
         });
 
         let mut decimate = self.controller.viewport().trace_decimate_step();
@@ -492,11 +501,13 @@ impl SegyViewerApp {
         self.controller.set_viewport_dimensions(plot_w, plot_h);
 
         if self.controller.poll_background_render() {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(8));
         }
         self.sync_texture_if_needed(ctx);
 
         let response = ui.allocate_rect(plot_rect, Sense::click_and_drag());
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Seismic Canvas"));
         self.handle_plot_interactions(ctx, &response, plot_rect);
 
         let painter = ui.painter();
@@ -721,10 +732,9 @@ impl SegyViewerApp {
             });
         self.show_headers_window = open;
     }
-}
 
-impl eframe::App for SegyViewerApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    /// Renders the complete application UI for a single frame into `ui`.
+    pub fn draw_ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.handle_dropped_files(&ctx);
 
@@ -750,5 +760,11 @@ impl eframe::App for SegyViewerApp {
         });
 
         self.draw_headers_window(&ctx);
+    }
+}
+
+impl eframe::App for SegyViewerApp {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.draw_ui(ui);
     }
 }
