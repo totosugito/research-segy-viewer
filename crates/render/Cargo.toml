@@ -15,3 +15,7 @@ criterion.workspace = true
 [[bench]]
 name = "image_render"
 harness = false
+
+[[bench]]
+name = "wiggle_render"
+harness = false

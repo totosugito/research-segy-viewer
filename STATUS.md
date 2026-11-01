@@ -1,10 +1,11 @@
 # Status
 
-- **Current step**: Step 4 completed (`render` image renderer: 256/4096-entry colormap LUTs, rayon column-parallel rendering, min/max decimation when zoomed out, 2-D bilinear interpolation when zoomed in, viewport-sized buffer only, unit tests, and criterion benchmark).
+- **Current step**: Step 5 completed (`render` wiggle renderer: pure path/polygon output, positive/negative/both variable-area fill with interpolated zero crossings, line-only mode, excursion scale and clipping, vertical min/max decimation to <=2 points/pixel when dense, fast scanline RGBA rasterizer, unit tests including sample file, and criterion benchmark).
 - **Completed steps**:
   - Step 1: Workspace scaffold (`segy-core`, `render`, `app`), `gate.sh`, `.gitignore` (`target/`, `refs/`, `.toolchain/`, `*.sgy`), `git init`.
   - Step 2: `segy-core` parser & unit tests.
   - Step 3: `render` amplitude pipeline & unit tests.
   - Step 4: `render` image renderer, colormap LUTs, unit tests, and criterion benchmark.
-- **Next step**: Step 5 (`render` wiggle renderer: per-trace baseline + amplitude*scale clipped to +-N trace spacings, positive-lobe polygon fill with zero-crossing interpolation, vertical min/max decimation to <=2 points/pixel when dense, plain path output + unit tests).
+  - Step 5: `render` wiggle renderer, variable-area polygon builder, vertical min/max decimation, fast rasterizer, unit tests, and criterion benchmark.
+- **Next step**: Step 6 (`render` viewport model: independent H/V pan+zoom, time window, trace decimation, axis tick computation, auto-switch wiggle->image when traces <~2px apart; pure and unit tested).
 - **Open issues**: None.

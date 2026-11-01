@@ -14,6 +14,7 @@ pub mod amplitude;
 pub mod colormap;
 pub mod error;
 pub mod image;
+pub mod wiggle;
 
 pub use amplitude::{
     AgcConfig, AmplitudeParams, AmplitudeScratch, ClipStrategy, MIN_AMP_EPSILON, NormScope,
@@ -30,6 +31,13 @@ pub use image::{
     DecimationMode, ImageRenderParams, ImageRenderer, ImageViewport, MAX_VIEWPORT_DIMENSION,
     RenderedImage, SliceTraceSource, TraceDataSource, render_image, render_image_into,
     resample_trace_vertical_into, sample_bin_minmax, select_decimated_amplitude,
+};
+pub use wiggle::{
+    LobePolarity, Point2f, TraceWiggleGeometry, WiggleFillMode, WigglePolygon, WiggleRenderParams,
+    WiggleRenderer, WiggleSectionGeometry, build_trace_wiggle, build_trace_wiggle_with_scratch,
+    decimate_trace_vertical_into, extract_lobe_polygons, interpolate_zero_crossing_y,
+    rasterize_wiggle_geometry_into, render_wiggle_geometry, render_wiggle_image,
+    render_wiggle_into, sample_index_to_pixel_y,
 };
 
 /// Readiness check for the headless render crate.
