@@ -348,3 +348,93 @@ fn kittest_sidebar_wiggle_geometry_and_headers_controls() -> Result<()> {
     assert!(h.state().controller().last_error().is_none());
     Ok(())
 }
+
+#[test]
+fn kittest_rectangle_zoom_and_trace_selection_with_mouse() -> Result<()> {
+    use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2};
+
+    let mut h = build_harness_with_sample()?;
+    h.run();
+    let canvas = h.get_by_label("Seismic Canvas").rect();
+    let full = h.state().controller().viewport().visible_trace_range();
+
+    // Left-drag a rectangle over the middle of the canvas: zoom box is the default tool.
+    let start = Pos2::new(
+        canvas.min.x + canvas.width() * 0.25,
+        canvas.min.y + canvas.height() * 0.25,
+    );
+    let end = Pos2::new(
+        canvas.min.x + canvas.width() * 0.75,
+        canvas.min.y + canvas.height() * 0.75,
+    );
+    h.event(Event::PointerMoved(start));
+    h.run();
+    h.event(Event::PointerButton {
+        pos: start,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    h.event(Event::PointerMoved(end));
+    h.run();
+    h.event(Event::PointerButton {
+        pos: end,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    let zoomed = h.state().controller().viewport().visible_trace_range();
+    assert!(zoomed.len() < full.len(), "{full:?} -> {zoomed:?}");
+
+    // Click selects the trace under the pointer; Esc deselects.
+    let click = Pos2::new(canvas.center().x, canvas.center().y);
+    h.event(Event::PointerMoved(click));
+    h.run();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: click,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+    }
+    let selected = h
+        .state()
+        .controller()
+        .selected_trace()
+        .map(|s| s.trace_index);
+    assert!(
+        selected.is_some_and(|i| zoomed.contains(&i)),
+        "{selected:?}"
+    );
+
+    h.event(Event::Key {
+        key: Key::ArrowRight,
+        physical_key: Some(Key::ArrowRight),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    assert_eq!(
+        h.state()
+            .controller()
+            .selected_trace()
+            .map(|s| s.trace_index),
+        selected.map(|i| i + 1)
+    );
+
+    h.event(Event::Key {
+        key: Key::Escape,
+        physical_key: Some(Key::Escape),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    assert!(h.state().controller().selected_trace().is_none());
+    Ok(())
+}

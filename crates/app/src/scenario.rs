@@ -62,7 +62,11 @@ pub enum ScenarioStepKind {
     ZoomHvIn,
     /// Step 6: Pan across traces and time samples.
     PanSection,
-    /// Step 7: Increase display gain to +6.0 dB.
+    /// Step 7: Rubber-band zoom into the central half of the visible section.
+    RectZoom,
+    /// Step 8: Select the trace under the section centre, like a mouse click.
+    SelectTrace,
+    /// Step 9: Increase display gain to +6.0 dB.
     GainPlus6Db,
     /// Step 8: Switch colormap to diverging Seismic (Blue-White-Red).
     ColormapSeismic,
@@ -78,13 +82,15 @@ pub enum ScenarioStepKind {
 
 impl ScenarioStepKind {
     /// Complete ordered step sequence for [`ScenarioName::Smoke`].
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::OpenInitialImage,
         Self::SwitchModeWiggle,
         Self::SwitchModeOverlay,
         Self::SwitchModeImage,
         Self::ZoomHvIn,
         Self::PanSection,
+        Self::RectZoom,
+        Self::SelectTrace,
         Self::GainPlus6Db,
         Self::ColormapSeismic,
         Self::PolarityReversed,
@@ -103,6 +109,8 @@ impl ScenarioStepKind {
             Self::SwitchModeImage => "switch_mode_image",
             Self::ZoomHvIn => "zoom_hv_in",
             Self::PanSection => "pan_section",
+            Self::RectZoom => "rect_zoom",
+            Self::SelectTrace => "select_trace",
             Self::GainPlus6Db => "gain_plus_6db",
             Self::ColormapSeismic => "colormap_seismic",
             Self::PolarityReversed => "polarity_reversed",
@@ -173,6 +181,40 @@ impl ScenarioStepKind {
                     vp.visible_trace_range(),
                     vp.visible_sample_range()
                 ))
+            }
+            Self::RectZoom => {
+                let before = ctrl.viewport().visible_trace_range();
+                let (w, h) = (
+                    ctrl.viewport().width_px() as f32,
+                    ctrl.viewport().height_px() as f32,
+                );
+                if !ctrl.zoom_to_pixel_rect(w * 0.25, h * 0.25, w * 0.75, h * 0.75) {
+                    return Err(AppError::ScenarioFailed(
+                        "rectangle zoom was rejected".to_string(),
+                    ));
+                }
+                let vp = ctrl.viewport();
+                let after = vp.visible_trace_range();
+                if after.len() >= before.len() {
+                    return Err(AppError::ScenarioFailed(format!(
+                        "rectangle zoom did not shrink trace range {before:?} -> {after:?}"
+                    )));
+                }
+                Ok(format!(
+                    "rect_zoom traces={after:?} samples={:?}",
+                    vp.visible_sample_range()
+                ))
+            }
+            Self::SelectTrace => {
+                ctrl.clear_selection();
+                let x = ctrl.viewport().width_px() as f32 * 0.5;
+                let Some(idx) = ctrl.click_select_at_pixel(x) else {
+                    return Err(AppError::ScenarioFailed(
+                        "click did not select a trace".to_string(),
+                    ));
+                };
+                let rms = ctrl.selected_trace().map_or(0.0, |sel| sel.rms);
+                Ok(format!("selected trace_index={idx} rms={rms:.3e}"))
             }
             Self::GainPlus6Db => {
                 ctrl.set_gain_db(6.0);

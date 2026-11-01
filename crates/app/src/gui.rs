@@ -45,7 +45,19 @@ pub struct SegyViewerApp {
     show_sidebar: bool,
     show_headers_window: bool,
     show_grid: bool,
+    mouse_tool: MouseTool,
+    zoom_box_origin: Option<Pos2>,
+    zoom_box_cancelled: bool,
     scenario_driver: Option<ScenarioDriver>,
+}
+
+/// What a left-button drag on the section does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MouseTool {
+    /// Left-drag draws a rectangle and zooms to it (pan with middle/right drag).
+    ZoomBox,
+    /// Left-drag pans the section.
+    Pan,
 }
 
 impl SegyViewerApp {
@@ -72,6 +84,9 @@ impl SegyViewerApp {
             show_sidebar: true,
             show_headers_window: false,
             show_grid: true,
+            mouse_tool: MouseTool::ZoomBox,
+            zoom_box_origin: None,
+            zoom_box_cancelled: false,
             scenario_driver,
         }
     }
@@ -161,6 +176,17 @@ impl SegyViewerApp {
             ] {
                 if ui.selectable_label(current_mode == mode, label).clicked() {
                     self.controller.set_display_mode(mode);
+                }
+            }
+
+            ui.separator();
+            ui.label("Drag:");
+            for (tool, label) in [(MouseTool::ZoomBox, "Zoom box"), (MouseTool::Pan, "Pan")] {
+                if ui
+                    .selectable_label(self.mouse_tool == tool, label)
+                    .clicked()
+                {
+                    self.mouse_tool = tool;
                 }
             }
 
@@ -498,6 +524,20 @@ impl SegyViewerApp {
                 ui.separator();
             }
 
+            if let Some(sel) = self.controller.selected_trace() {
+                let hdr = sel.header.map_or_else(String::new, |h| {
+                    format!(
+                        " | Inline {} Xline {} CDP {} Offset {}",
+                        h.inline, h.xline, h.ensemble_number, h.offset
+                    )
+                });
+                ui.monospace(format!(
+                    "Selected #{}{} | min {:.3e} max {:.3e} rms {:.3e}",
+                    sel.trace_number, hdr, sel.min, sel.max, sel.rms
+                ));
+                ui.separator();
+            }
+
             if let Some(cursor) = self.controller.last_cursor_readout() {
                 ui.monospace(format!(
                     "Trace #{} (Hdr: {}) | Sample #{} | Time: {:.1} ms | Amp: {:.5e}",
@@ -508,7 +548,7 @@ impl SegyViewerApp {
                     cursor.amplitude,
                 ));
             } else {
-                ui.label("Hover over section for cursor readout (Drag: Pan, Wheel: Zoom, Shift+Wheel: Zoom H, Alt+Wheel: Zoom V)");
+                ui.label("Drag: zoom box | Middle/Right drag: Pan | Click: select trace | Wheel: Zoom (Shift: H, Alt: V) | Esc: cancel/deselect | Double-click: Fit All");
             }
         });
     }
@@ -560,6 +600,8 @@ impl SegyViewerApp {
         }
 
         self.paint_axes_and_grid(painter, plot_rect);
+        self.paint_selected_trace(painter, plot_rect);
+        self.paint_zoom_box(ctx, painter, plot_rect);
         if let Some(hover_pos) = response.hover_pos()
             && plot_rect.contains(hover_pos)
         {
@@ -597,15 +639,76 @@ impl SegyViewerApp {
         response: &egui::Response,
         plot_rect: Rect,
     ) {
+        let local = |p: Pos2| {
+            (
+                (p.x - plot_rect.min.x).clamp(0.0, plot_rect.width() - 0.01),
+                (p.y - plot_rect.min.y).clamp(0.0, plot_rect.height() - 0.01),
+            )
+        };
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+
         if response.double_clicked() {
             self.controller.fit_to_data();
+        } else if response.clicked_by(egui::PointerButton::Primary)
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.controller.click_select_at_pixel(local(pos).0);
         }
 
-        if response.dragged_by(egui::PointerButton::Primary)
-            || response.dragged_by(egui::PointerButton::Middle)
+        // Pan: middle/right drag always; left drag when the Pan tool is active.
+        let left_pans = self.mouse_tool == MouseTool::Pan;
+        if response.dragged_by(egui::PointerButton::Middle)
+            || response.dragged_by(egui::PointerButton::Secondary)
+            || (left_pans && response.dragged_by(egui::PointerButton::Primary))
         {
             let delta = response.drag_delta();
             self.controller.pan_by_screen_drag_px(delta.x, delta.y);
+        }
+
+        // Rubber-band zoom with the left button.
+        if !left_pans {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                self.zoom_box_origin = ctx
+                    .input(|i| i.pointer.press_origin())
+                    .or_else(|| response.interact_pointer_pos());
+                self.zoom_box_cancelled = false;
+            }
+            if self.zoom_box_origin.is_some() && escape {
+                self.zoom_box_cancelled = true;
+            }
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                if let (Some(start), Some(end), false) = (
+                    self.zoom_box_origin,
+                    response.interact_pointer_pos(),
+                    self.zoom_box_cancelled,
+                ) {
+                    let (x0, y0) = local(start);
+                    let (x1, y1) = local(end);
+                    self.controller.zoom_to_pixel_rect(x0, y0, x1, y1);
+                }
+                self.zoom_box_origin = None;
+            }
+        } else {
+            self.zoom_box_origin = None;
+        }
+
+        // Keyboard: Esc deselects (when not cancelling a zoom box), arrows move the selection.
+        if escape && self.zoom_box_origin.is_none() {
+            self.controller.clear_selection();
+        }
+        if self.controller.selected_trace().is_some() {
+            let (left, right) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::ArrowLeft),
+                    i.key_pressed(egui::Key::ArrowRight),
+                )
+            });
+            if left {
+                self.controller.move_selection(-1);
+            }
+            if right {
+                self.controller.move_selection(1);
+            }
         }
 
         if let Some(hover_pos) = response.hover_pos()
@@ -717,6 +820,41 @@ impl SegyViewerApp {
             "Time (ms)",
             font,
             Color32::from_rgb(160, 170, 185),
+        );
+    }
+
+    fn paint_selected_trace(&self, painter: &egui::Painter, plot_rect: Rect) {
+        let Some(x_local) = self.controller.selected_trace_pixel_x() else {
+            return;
+        };
+        let x = plot_rect.min.x + x_local;
+        painter.line_segment(
+            [Pos2::new(x, plot_rect.min.y), Pos2::new(x, plot_rect.max.y)],
+            Stroke::new(1.5, Color32::from_rgb(70, 220, 255)),
+        );
+    }
+
+    fn paint_zoom_box(&self, ctx: &Context, painter: &egui::Painter, plot_rect: Rect) {
+        let Some(start) = self.zoom_box_origin else {
+            return;
+        };
+        if self.zoom_box_cancelled {
+            return;
+        }
+        let Some(now) = ctx.input(|i| i.pointer.latest_pos()) else {
+            return;
+        };
+        let rect = Rect::from_two_pos(start, now).intersect(plot_rect);
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            Color32::from_rgba_unmultiplied(255, 210, 60, 36),
+        );
+        painter.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, Color32::from_rgb(255, 210, 60)),
+            StrokeKind::Inside,
         );
     }
 

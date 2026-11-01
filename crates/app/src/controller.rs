@@ -10,7 +10,7 @@ use render::{
     Polarity, RenderLod, RenderedImage, SectionDataBounds, SectionRenderParams, SectionRenderer,
     SeismicViewport, TraceBalance, WiggleFillMode,
 };
-use segy_core::{AxisHeaderKey, SegyFile};
+use segy_core::{AxisHeaderKey, SegyFile, TraceHeader};
 
 use crate::cli::AppCliArgs;
 use crate::error::{AppError, Result};
@@ -20,6 +20,26 @@ pub const DEFAULT_VIEWPORT_WIDTH: u32 = 1000;
 
 /// Default initial viewport canvas height in pixels.
 pub const DEFAULT_VIEWPORT_HEIGHT: u32 = 680;
+
+/// Rubber-band rectangles smaller than this (in pixels, either axis) are ignored.
+pub const MIN_ZOOM_BOX_PX: f32 = 6.0;
+
+/// Summary of the trace the user selected by clicking on the section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceSelection {
+    /// 0-based trace index.
+    pub trace_index: usize,
+    /// 1-based trace number.
+    pub trace_number: usize,
+    /// Parsed trace header, when readable.
+    pub header: Option<TraceHeader>,
+    /// Minimum raw sample amplitude.
+    pub min: f32,
+    /// Maximum raw sample amplitude.
+    pub max: f32,
+    /// Root-mean-square raw sample amplitude.
+    pub rms: f32,
+}
 
 #[derive(Debug, Clone)]
 struct WorkerJob {
@@ -45,6 +65,7 @@ pub struct AppController {
     render_params: SectionRenderParams,
     renderer: SectionRenderer,
     last_cursor: Option<CursorReadout>,
+    selected_trace: Option<TraceSelection>,
     last_error: Option<String>,
     status_message: Option<String>,
     state_revision: u64,
@@ -82,6 +103,7 @@ impl AppController {
             render_params: SectionRenderParams::default(),
             renderer: SectionRenderer::new(),
             last_cursor: None,
+            selected_trace: None,
             last_error: None,
             status_message: None,
             state_revision: 1,
@@ -159,6 +181,7 @@ impl AppController {
         self.viewport = vp;
         self.render_params.global_reference = None;
         self.last_cursor = None;
+        self.selected_trace = None;
         self.last_error = None;
         self.status_message = Some(summary);
         self.cached_image = None;
@@ -500,6 +523,133 @@ impl AppController {
         }
     }
 
+    /// Zooms the viewport to the pixel rectangle `(x0, y0)`–`(x1, y1)` (viewport-local pixels).
+    ///
+    /// Returns `false` (and changes nothing) when the rectangle is smaller than
+    /// [`MIN_ZOOM_BOX_PX`] on either axis or does not map onto data.
+    pub fn zoom_to_pixel_rect(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+        if !self.has_file()
+            || (x1 - x0).abs() < MIN_ZOOM_BOX_PX
+            || (y1 - y0).abs() < MIN_ZOOM_BOX_PX
+        {
+            return false;
+        }
+        let max_x = (self.viewport.width_px() as f32 - 0.01).max(0.0);
+        let max_y = (self.viewport.height_px() as f32 - 0.01).max(0.0);
+        let (xa, xb) = (x0.clamp(0.0, max_x), x1.clamp(0.0, max_x));
+        let (ya, yb) = (y0.clamp(0.0, max_y), y1.clamp(0.0, max_y));
+        let (Some(ta), Some(tb)) = (
+            self.viewport.pixel_to_trace_index(xa),
+            self.viewport.pixel_to_trace_index(xb),
+        ) else {
+            return false;
+        };
+        let (Some(ma), Some(mb)) = (
+            self.viewport.pixel_to_time_ms(ya),
+            self.viewport.pixel_to_time_ms(yb),
+        ) else {
+            return false;
+        };
+        let prev_t = self.viewport.visible_trace_range();
+        let prev_s = self.viewport.visible_sample_range();
+        self.viewport
+            .set_trace_window(ta.min(tb), ta.max(tb).saturating_add(1));
+        self.viewport.set_time_window_ms(ma, mb);
+        if self.viewport.visible_trace_range() != prev_t
+            || self.viewport.visible_sample_range() != prev_s
+        {
+            self.mark_dirty();
+        }
+        true
+    }
+
+    /// Returns the currently selected trace summary, if any.
+    pub fn selected_trace(&self) -> Option<&TraceSelection> {
+        self.selected_trace.as_ref()
+    }
+
+    /// Selects trace `trace_index` (0-based) and computes its amplitude summary.
+    /// Returns `false` when the index is out of range or no file is loaded.
+    pub fn select_trace(&mut self, trace_index: usize) -> bool {
+        let Some(file) = self.file.as_deref() else {
+            return false;
+        };
+        if trace_index >= file.trace_count() {
+            return false;
+        }
+        let (mut min, mut max, mut sum_sq, mut n) =
+            (f32::INFINITY, f32::NEG_INFINITY, 0.0_f64, 0_u64);
+        if let Ok(samples) = file.read_trace_samples(trace_index) {
+            for v in samples.into_iter().filter(|v| v.is_finite()) {
+                min = min.min(v);
+                max = max.max(v);
+                sum_sq += f64::from(v) * f64::from(v);
+                n += 1;
+            }
+        }
+        let (min, max, rms) = if n == 0 {
+            (0.0, 0.0, 0.0)
+        } else {
+            (min, max, (sum_sq / n as f64).sqrt() as f32)
+        };
+        self.selected_trace = Some(TraceSelection {
+            trace_index,
+            trace_number: trace_index + 1,
+            header: file.trace_header(trace_index).ok(),
+            min,
+            max,
+            rms,
+        });
+        true
+    }
+
+    /// Clicking at viewport-local `x_px`: selects the trace under it, or deselects when it is
+    /// already the selected trace. Returns the selected trace index afterwards.
+    pub fn click_select_at_pixel(&mut self, x_px: f32) -> Option<usize> {
+        let idx = self.viewport.pixel_to_trace_index(x_px)?;
+        if self.selected_trace.as_ref().map(|s| s.trace_index) == Some(idx) {
+            self.selected_trace = None;
+            return None;
+        }
+        self.select_trace(idx).then_some(idx)
+    }
+
+    /// Clears the trace selection.
+    pub fn clear_selection(&mut self) {
+        self.selected_trace = None;
+    }
+
+    /// Moves the selection by `delta` traces (clamped to the file) and pans the view so the
+    /// selected trace stays visible. Does nothing without an existing selection.
+    pub fn move_selection(&mut self, delta: isize) {
+        let (Some(sel), Some(file)) = (self.selected_trace.as_ref(), self.file.as_deref()) else {
+            return;
+        };
+        let last = file.trace_count().saturating_sub(1);
+        let next = sel.trace_index.saturating_add_signed(delta).min(last);
+        if !self.select_trace(next) {
+            return;
+        }
+        let range = self.viewport.visible_trace_range();
+        if next < range.start {
+            self.viewport.pan_traces(next as f64 - range.start as f64);
+            self.mark_dirty();
+        } else if next >= range.end {
+            self.viewport
+                .pan_traces((next + 1) as f64 - range.end as f64);
+            self.mark_dirty();
+        }
+    }
+
+    /// Viewport-local x pixel of the selected trace, if it is inside the visible trace range.
+    pub fn selected_trace_pixel_x(&self) -> Option<f32> {
+        let sel = self.selected_trace.as_ref()?;
+        let range = self.viewport.visible_trace_range();
+        range
+            .contains(&sel.trace_index)
+            .then(|| self.viewport.trace_index_to_pixel_x(sel.trace_index))
+    }
+
     /// Resets both horizontal and vertical axes to fit the full dataset.
     pub fn fit_to_data(&mut self) {
         let prev_t = self.viewport.visible_trace_range();
@@ -789,6 +939,72 @@ mod tests {
 
         let segy = SegyFile::from_bytes(bytes)?;
         Ok(Arc::new(segy))
+    }
+
+    #[test]
+    fn rect_zoom_maps_pixels_to_trace_and_time_window_and_ignores_tiny_boxes() -> Result<()> {
+        let mut ctrl = AppController::new(200, 100);
+        ctrl.set_segy_file(make_synthetic_segy(100, 200)?, None);
+
+        assert!(!ctrl.zoom_to_pixel_rect(10.0, 10.0, 12.0, 80.0));
+        assert!(!ctrl.zoom_to_pixel_rect(10.0, 10.0, 80.0, 13.0));
+        assert_eq!(ctrl.viewport().visible_trace_range(), 0..100);
+
+        // Right half horizontally, top half vertically.
+        assert!(ctrl.zoom_to_pixel_rect(100.0, 0.0, 199.0, 50.0));
+        let traces = ctrl.viewport().visible_trace_range();
+        assert!(traces.start >= 49 && traces.start <= 51, "{traces:?}");
+        assert_eq!(traces.end, 100);
+        let (t0, t1) = ctrl.viewport().visible_time_window_ms();
+        assert!(t0 < 1.0);
+        assert!(t1 < 0.55 * 200.0 * 4.0, "t1={t1}");
+
+        // Reversed corner order gives the same window.
+        let mut ctrl2 = AppController::new(200, 100);
+        ctrl2.set_segy_file(make_synthetic_segy(100, 200)?, None);
+        assert!(ctrl2.zoom_to_pixel_rect(199.0, 50.0, 100.0, 0.0));
+        assert_eq!(
+            ctrl2.viewport().visible_trace_range(),
+            ctrl.viewport().visible_trace_range()
+        );
+
+        ctrl.fit_to_data();
+        assert_eq!(ctrl.viewport().visible_trace_range(), 0..100);
+        Ok(())
+    }
+
+    #[test]
+    fn click_selects_toggles_and_arrow_moves_selection() -> Result<()> {
+        let mut ctrl = AppController::new(200, 100);
+        assert_eq!(ctrl.click_select_at_pixel(50.0), None);
+        ctrl.set_segy_file(make_synthetic_segy(100, 200)?, None);
+
+        let idx = ctrl.click_select_at_pixel(50.0);
+        assert_eq!(idx, Some(25));
+        let sel = ctrl
+            .selected_trace()
+            .cloned()
+            .ok_or(AppError::NoFileLoaded)?;
+        assert_eq!(sel.trace_number, 26);
+        assert!(sel.max > sel.min && sel.rms > 0.0);
+        assert_eq!(sel.header.map(|h| h.ensemble_number), Some(1000 + 25 * 10));
+        assert!(ctrl.selected_trace_pixel_x().is_some());
+
+        // Clicking the same trace toggles off.
+        assert_eq!(ctrl.click_select_at_pixel(50.0), None);
+        assert!(ctrl.selected_trace().is_none());
+
+        ctrl.select_trace(0);
+        ctrl.move_selection(-1);
+        assert_eq!(ctrl.selected_trace().map(|s| s.trace_index), Some(0));
+        ctrl.move_selection(5);
+        assert_eq!(ctrl.selected_trace().map(|s| s.trace_index), Some(5));
+        ctrl.move_selection(1_000);
+        assert_eq!(ctrl.selected_trace().map(|s| s.trace_index), Some(99));
+        assert!(!ctrl.select_trace(100));
+        ctrl.clear_selection();
+        assert!(ctrl.selected_trace().is_none());
+        Ok(())
     }
 
     #[test]
