@@ -47,6 +47,10 @@ pub struct AppCliArgs {
     pub scenario: Option<ScenarioName>,
     /// Whether the automated scenario runs without inter-step pauses (`--scenario-fast`).
     pub scenario_fast: bool,
+    /// Run the captioned feature demo in the live window (`--demo`).
+    pub demo: bool,
+    /// Hold-time multiplier for the live demo (`--demo-speed 0.5` = twice as fast).
+    pub demo_speed: Option<f64>,
 }
 
 impl AppCliArgs {
@@ -77,6 +81,21 @@ impl AppCliArgs {
                 "--polarity" | "-p" => {
                     let val = next_value(&mut iter, arg)?;
                     parsed.polarity = Some(parse_polarity(&val)?);
+                }
+                "--demo" => {
+                    parsed.demo = true;
+                }
+                "--demo-speed" => {
+                    let val = next_value(&mut iter, arg)?;
+                    let speed: f64 = val.parse().map_err(|_| {
+                        AppError::InvalidArgument(format!("invalid --demo-speed '{val}'"))
+                    })?;
+                    if !(speed.is_finite() && speed > 0.0) {
+                        return Err(AppError::InvalidArgument(
+                            "--demo-speed must be positive".to_string(),
+                        ));
+                    }
+                    parsed.demo_speed = Some(speed);
                 }
                 "--scenario" => {
                     let val = next_value(&mut iter, arg)?;

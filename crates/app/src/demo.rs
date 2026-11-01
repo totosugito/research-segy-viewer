@@ -37,6 +37,11 @@ pub struct DemoOverlay {
     pub cursor: Option<(f32, f32)>,
     /// Whether a click ring is drawn around the pointer.
     pub click: bool,
+    /// Pointer position in window pixels, drawn above every panel (used when real input events
+    /// are injected, e.g. by the primary-feature demo).
+    pub pointer: Option<(f32, f32)>,
+    /// Whether a mouse button is currently held (draws the click ring around `pointer`).
+    pub pressed: bool,
     /// Rubber-band rectangle as fractions `(x0, y0, x1, y1)` of the plot area.
     pub zoom_box: Option<(f32, f32, f32, f32)>,
 }

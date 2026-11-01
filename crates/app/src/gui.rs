@@ -17,7 +17,7 @@ use segy_core::AxisHeaderKey;
 
 use crate::cli::AppCliArgs;
 use crate::controller::{AppController, MAX_AXIS_LABEL_ROWS};
-use crate::demo::DemoOverlay;
+use crate::demo::{DemoOverlay, DemoStep, demo_steps};
 use crate::scenario::{
     ScenarioDriver, ScenarioReport, ScenarioStepKind, evaluate_step_outcome, format_panic_payload,
 };
@@ -127,7 +127,39 @@ pub struct SegyViewerApp {
     zoom_box_origin: Option<Pos2>,
     zoom_box_cancelled: bool,
     demo_overlay: Option<DemoOverlay>,
+    demo_run: Option<DemoRun>,
     scenario_driver: Option<ScenarioDriver>,
+}
+
+/// Time to wait before the first live-demo step, so a screen recording can be started.
+const DEMO_START_DELAY: Duration = Duration::from_secs(5);
+
+/// State of a live `--demo` run.
+struct DemoRun {
+    steps: Vec<DemoStep>,
+    next: usize,
+    due: Instant,
+    speed: f64,
+    overlay: DemoOverlay,
+    failures: usize,
+}
+
+impl DemoRun {
+    fn new(speed: f64) -> Self {
+        let steps = demo_steps();
+        let overlay = DemoOverlay {
+            total: steps.len(),
+            ..DemoOverlay::default()
+        };
+        Self {
+            steps,
+            next: 0,
+            due: Instant::now() + DEMO_START_DELAY,
+            speed,
+            overlay,
+            failures: 0,
+        }
+    }
 }
 
 /// What a left-button drag on the section does.
@@ -167,6 +199,9 @@ impl SegyViewerApp {
             zoom_box_origin: None,
             zoom_box_cancelled: false,
             demo_overlay: None,
+            demo_run: args
+                .demo
+                .then(|| DemoRun::new(args.demo_speed.unwrap_or(1.0))),
             scenario_driver,
         }
     }
@@ -1171,11 +1206,50 @@ impl SegyViewerApp {
 
     /// Renders the complete application UI for a single frame into `ui`.
     pub fn draw_ui(&mut self, ui: &mut Ui) {
-        if self.scenario_driver.is_some() {
+        if self.demo_run.is_some() {
+            self.drive_demo_frame(ui);
+        } else if self.scenario_driver.is_some() {
             self.drive_scenario_frame(ui);
         } else {
             self.draw_panels_and_canvas(ui);
         }
+    }
+
+    /// Advances the live `--demo`: runs each captioned step when its predecessor's hold time ends.
+    fn drive_demo_frame(&mut self, ui: &mut Ui) {
+        self.draw_panels_and_canvas(ui);
+        let now = Instant::now();
+        let Some(mut run) = self.demo_run.take() else {
+            return;
+        };
+        if now >= run.due && run.next < run.steps.len() {
+            let step = &run.steps[run.next];
+            run.overlay.caption = step.caption.to_string();
+            run.overlay.index = run.next + 1;
+            let outcome = catch_unwind(AssertUnwindSafe(|| (step.run)(self, &mut run.overlay)));
+            let verdict = match outcome {
+                Ok(Ok(())) => "ok".to_string(),
+                Ok(Err(reason)) => format!("FAILED: {reason}"),
+                Err(payload) => format!("PANIC: {}", format_panic_payload(payload)),
+            };
+            if verdict != "ok" {
+                run.failures += 1;
+            }
+            println!(
+                "[demo {:>2}/{}] {verdict:<6} {}",
+                run.next + 1,
+                run.steps.len(),
+                step.caption
+            );
+            self.demo_overlay = Some(run.overlay.clone());
+            run.due = now + Duration::from_secs_f64(step.hold_ms as f64 / 1000.0 / run.speed);
+            run.next += 1;
+        } else if now >= run.due {
+            println!("[demo] finished, {} step(s) failed", run.failures);
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(30));
+        self.demo_run = Some(run);
     }
 
     fn draw_panels_and_canvas(&mut self, ui: &mut Ui) {
@@ -1204,6 +1278,30 @@ impl SegyViewerApp {
         });
 
         self.draw_headers_window(&ctx);
+        self.paint_demo_pointer(&ctx);
+    }
+
+    /// Draws the injected demo pointer above all panels and windows.
+    fn paint_demo_pointer(&self, ctx: &Context) {
+        let Some(ov) = &self.demo_overlay else {
+            return;
+        };
+        let Some((x, y)) = ov.pointer else {
+            return;
+        };
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::NULL.with("demo_pointer"),
+        ));
+        let p = Pos2::new(x, y);
+        if ov.pressed {
+            painter.circle_stroke(p, 15.0, Stroke::new(2.5, Color32::from_rgb(255, 210, 60)));
+        }
+        painter.add(egui::Shape::convex_polygon(
+            vec![p, p + Vec2::new(0.0, 19.0), p + Vec2::new(13.0, 13.0)],
+            Color32::WHITE,
+            Stroke::new(1.3, Color32::BLACK),
+        ));
     }
 
     fn drive_scenario_frame(&mut self, ui: &mut Ui) {
