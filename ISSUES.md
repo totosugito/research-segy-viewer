@@ -12,4 +12,3 @@ Tags: OBSERVED = seen in output, INFERRED = concluded, ASSUMED = not checked.
 8. **LOW, demo caption banner** covers the bottom of the section (demo only).
 9. **LOW, live `--demo` uses direct state changes** (no real pointer); the offscreen `primary_demo` uses real input.
 10. **INFO, sample file headers** (Inline/Xline/Offset = 0) cannot demonstrate multi-label rows.
-11. **INFO, agy sessions** can claim completion ahead of reality or die by timeout; always run `./gate.sh` yourself.

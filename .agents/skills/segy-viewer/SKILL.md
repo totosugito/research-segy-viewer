@@ -26,8 +26,8 @@ IN, drawing features (maximize these):
 
 OUT: header editor, SEG-Y writer, processing/filters (beyond display gain/AGC), picking, 3D.
 
-## Conventions (borrowed from `/home/toto/Documents/gridcraft`)
-- Rust only, egui/eframe UI, workspace of small crates. Read `/home/toto/Documents/gridcraft/AGENTS.md` + `Cargo.toml` for style: `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`, `unsafe_code = "forbid"`, errors via `Result` + `thiserror`, file-derived numbers are hostile (validate counts/offsets, cap allocations).
+## Conventions (borrowed from gridcraft, https://github.com/storytold/gridcraft)
+- Rust only, egui/eframe UI, workspace of small crates. Read gridcraft's `AGENTS.md` + `Cargo.toml` (https://github.com/storytold/gridcraft) for style: `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`, `unsafe_code = "forbid"`, errors via `Result` + `thiserror`, file-derived numbers are hostile (validate counts/offsets, cap allocations).
 - Layering: `segy-core` (parse, no UI) → `render` (pure: samples → pixels / polyline paths, no egui) → `app` (egui). Render must be testable headless.
 - Clean-room: SeiSee is *observed* black-box only. Never disassemble it, never commit its screenshots (keep under `refs/seisee/`, gitignored), never copy its icons/wording.
 
@@ -54,10 +54,9 @@ OUT: header editor, SEG-Y writer, processing/filters (beyond display gain/AGC), 
 - 100k-trace file pans at interactive rate; zero panics on fuzzed input.
 - All gates green.
 
-## Working with agy (agy only)
-This project is built entirely by agy; no other agent writes or reviews code here.
-- Run `agy` from `/home/toto/Documents/segy_viewer` and work the Plan steps in order, one per session/commit.
-- agy runs the gates itself (`cargo fmt && cargo clippy -D warnings && cargo test`, benches from step 9) and must paste the real command output; never claim green without it, and never alter the toolchain, dependencies' sources or tests to force a pass.
-- agy captures SeiSee and its own output (step 8), views both PNGs, and records the differences in `refs/seisee/observed.md` before changing code.
-- Update `STATUS.md` (current step, next step, open issues) at the end of every step so a fresh agy session can resume from it.
-- Stop and ask the human only for: scope changes, adding heavy dependencies, or anything touching files outside this repo.
+## Working rules
+- Work the Plan steps in order, one per session/commit.
+- Run the gates yourself (`./gate.sh`; benches from step 9) and paste real output; never claim green without it.
+- Capture SeiSee and the app's own output (step 8), view both PNGs, and record differences in `refs/seisee/observed.md` before changing code.
+- Update `STATUS.md` (current step, next step, open issues) after every step so a fresh session can resume.
+- Ask the human only for: scope changes, adding heavy dependencies, or anything touching files outside this repo.

@@ -1,6 +1,6 @@
 # SEG-Y viewer — instructions for agents
 
-Read-only, fast Rust/egui SEG-Y viewer with the richest possible wiggle/image drawing features (no header editing or writing). Read `.agents/skills/segy-viewer/SKILL.md` first: it holds the scope, the step-by-step plan and the SeiSee screen-capture workflow. Style follows `/home/toto/Documents/gridcraft/AGENTS.md` (no panics, no unsafe, hostile file input).
+Read-only, fast Rust/egui SEG-Y viewer with the richest possible wiggle/image drawing features (no header editing or writing). Read `.agents/skills/segy-viewer/SKILL.md` first: it holds the scope, the step-by-step plan and the SeiSee screen-capture workflow. Style follows `https://github.com/storytold/gridcraft (AGENTS.md)` (no panics, no unsafe, hostile file input).
 
 ## Read before working
 1. `STATUS.md` (what is verified vs not), `ISSUES.md` (ranked problems), `docs/TESTING.md` (test layers and rules), `docs/ENVIRONMENT.md` (what this machine can and cannot do).

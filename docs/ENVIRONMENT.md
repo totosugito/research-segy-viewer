@@ -7,4 +7,3 @@
 - `ffmpeg` available (frames + concat file → mp4).
 - Rust is **not** installed system-wide: the toolchain lives in `.toolchain/` (gitignored, ~1.6 GB). `gate.sh` sets it up.
 - Reference viewer SeiSee: wine, `~/.wine/drive_c/Program Files (x86)/DMNG/SeiSee/SeiSee.exe`; launcher `~/.local/share/applications/wine/Programs/SeiSee/SeiSee.desktop`. Not yet captured.
-- agy (Gemini CLI): API calls sometimes time out (`connection timed out`); sessions are cut by the wrapper timeout; use `--continue` to resume.
