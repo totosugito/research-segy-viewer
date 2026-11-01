@@ -12,7 +12,7 @@ use crate::wiggle::{WiggleFillMode, WiggleRenderParams, WiggleRenderer};
 
 /// Default minimum horizontal pixel spacing between wiggle traces when viewing a dense section
 /// without explicit trace decimation.
-pub const DEFAULT_MIN_WIGGLE_SPACING_PX: f32 = 8.0;
+pub const DEFAULT_MIN_WIGGLE_SPACING_PX: f32 = 9.0;
 
 /// Progressive rendering quality level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,11 +65,11 @@ impl Default for SectionRenderParams {
             decimation: DecimationMode::DominantExtremum,
             wiggle_fill: WiggleFillMode::Positive,
             wiggle_draw_line: true,
-            wiggle_excursion_spacings: 1.0,
-            wiggle_clip_spacings: 1.5,
+            wiggle_excursion_spacings: 1.45,
+            wiggle_clip_spacings: 1.85,
             min_wiggle_spacing_px: DEFAULT_MIN_WIGGLE_SPACING_PX,
             background_rgba: [255, 255, 255, 255],
-            line_rgba: [0, 0, 0, 255],
+            line_rgba: [45, 45, 52, 255],
             positive_fill_rgba: [0, 0, 0, 255],
             negative_fill_rgba: [30, 100, 200, 255],
             lod: RenderLod::Full,

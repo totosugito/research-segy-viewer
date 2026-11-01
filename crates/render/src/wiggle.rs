@@ -610,6 +610,7 @@ pub fn extract_lobe_polygons(
 #[derive(Default)]
 struct WiggleWorkerScratch {
     trace_buf: Vec<f32>,
+    stack_buf: Vec<f32>,
     amp_scratch: AmplitudeScratch,
     y_and_amp: Vec<(f32, f32)>,
 }
@@ -634,6 +635,7 @@ pub fn render_wiggle_geometry(
     let amp_params = params.amplitude.with_clamp_limit(None);
     let sample_range = viewport.sample_range.clone();
     let trace_start = viewport.trace_range.start;
+    let trace_end = viewport.trace_range.end;
     let reverse_traces = viewport.reverse_traces;
 
     let traces: Vec<TraceWiggleGeometry> = (0..rendered_traces)
@@ -651,10 +653,26 @@ pub fn render_wiggle_geometry(
             };
             let baseline_x = ((slot_idx as f32) + 0.5) * trace_spacing_px;
 
-            if source
-                .read_trace_window(trace_index, sample_range.clone(), &mut scratch.trace_buf)
-                .is_ok()
-            {
+            let read_ok = if rendered_traces < visible_traces {
+                let bin_end = (trace_start
+                    + ((mapped_slot + 1) * visible_traces) / rendered_traces)
+                    .max(trace_index + 1)
+                    .min(trace_end);
+                read_stacked_trace_window(
+                    source,
+                    trace_index..bin_end,
+                    sample_range.clone(),
+                    height,
+                    &mut scratch.trace_buf,
+                    &mut scratch.stack_buf,
+                )
+            } else {
+                source
+                    .read_trace_window(trace_index, sample_range.clone(), &mut scratch.trace_buf)
+                    .is_ok()
+            };
+
+            if read_ok {
                 process_trace_with_scratch(
                     &mut scratch.trace_buf,
                     &amp_params,
@@ -683,6 +701,68 @@ pub fn render_wiggle_geometry(
         trace_spacing_px,
         traces,
     })
+}
+
+fn read_stacked_trace_window(
+    source: &dyn TraceDataSource,
+    trace_bin: std::ops::Range<usize>,
+    sample_range: std::ops::Range<usize>,
+    height: u32,
+    out_trace: &mut Vec<f32>,
+    tmp_trace: &mut Vec<f32>,
+) -> bool {
+    let bin_len = trace_bin.end.saturating_sub(trace_bin.start);
+    // Stack at most 3 contiguous traces around the bin center so dipping reflectors never
+    // suffer destructive phase cancellation across wide trace bins.
+    let max_stack = bin_len.clamp(1, 3);
+    let center = trace_bin.start + bin_len / 2;
+    let start_trace = center.saturating_sub(max_stack / 2).max(trace_bin.start);
+    let end_trace = (start_trace + max_stack).min(trace_bin.end);
+
+    out_trace.clear();
+    let mut stacked_count = 0_usize;
+    for t in start_trace..end_trace {
+        if source
+            .read_trace_window(t, sample_range.clone(), tmp_trace)
+            .is_ok()
+            && !tmp_trace.is_empty()
+        {
+            if stacked_count == 0 {
+                out_trace.resize(tmp_trace.len(), 0.0);
+                for (dst, &src) in out_trace.iter_mut().zip(tmp_trace.iter()) {
+                    *dst = sanitize_sample(src);
+                }
+            } else {
+                for (dst, &src) in out_trace.iter_mut().zip(tmp_trace.iter()) {
+                    *dst += sanitize_sample(src);
+                }
+            }
+            stacked_count += 1;
+        }
+    }
+
+    if stacked_count == 0 {
+        return false;
+    }
+    if stacked_count > 1 {
+        let inv = 1.0 / (stacked_count as f32);
+        for v in out_trace.iter_mut() {
+            *v *= inv;
+        }
+    }
+
+    // Apply a light 3-point [0.25, 0.5, 0.25] anti-aliasing filter when vertical sample count
+    // approaches or exceeds vertical pixel height during horizontal trace decimation.
+    if out_trace.len() >= (height as usize).max(4) {
+        tmp_trace.clear();
+        tmp_trace.extend_from_slice(out_trace);
+        let n = tmp_trace.len();
+        for i in 1..(n - 1) {
+            out_trace[i] = 0.25 * tmp_trace[i - 1] + 0.5 * tmp_trace[i] + 0.25 * tmp_trace[i + 1];
+        }
+    }
+
+    true
 }
 
 /// Rasterizes precomputed [`WiggleSectionGeometry`] (variable-area lobes and wiggle polylines)
@@ -721,37 +801,23 @@ pub fn rasterize_wiggle_geometry_into(
     // 1. Scanline-fill positive/negative variable-area lobes along each trace.
     if params.fill_mode.has_fill() {
         for trace in &geometry.traces {
-            if trace.polyline.is_empty() {
-                continue;
-            }
-            let baseline_x = trace.baseline_x;
-            for window in trace.polyline.windows(2) {
-                let p0 = window[0];
-                let p1 = window[1];
-                rasterize_lobe_segment(p0, p1, baseline_x, w_f32, h_f32, width, params, out_rgba);
-            }
+            rasterize_trace_lobes(trace, w_f32, h_f32, width, height, params, out_rgba);
         }
     }
 
     // 2. Stroke the continuous wiggle polylines on top of the lobe fills.
     if params.draw_line {
-        let line_color = params.line_rgba;
         for trace in &geometry.traces {
-            if trace.polyline.len() == 1 {
-                let p = trace.polyline[0];
-                plot_pixel(
-                    out_rgba,
-                    width,
-                    height,
-                    p.x.round() as i32,
-                    p.y.round() as i32,
-                    line_color,
-                );
-            } else {
-                for window in trace.polyline.windows(2) {
-                    draw_line_segment(out_rgba, width, height, window[0], window[1], line_color);
-                }
-            }
+            rasterize_trace_stroke(
+                trace,
+                geometry.trace_spacing_px,
+                w_f32,
+                h_f32,
+                width,
+                height,
+                params.line_rgba,
+                out_rgba,
+            );
         }
     }
 
@@ -837,77 +903,279 @@ pub fn render_wiggle_into(
     renderer.render_into(source, viewport, params, clear_background, out_rgba)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Evaluates the interpolated `x` at `y_center` and the `[x_min, x_max]` envelope of a monotonic
+/// polyline across the vertical pixel band `[y_lo, y_hi]`.
+fn evaluate_polyline_band(
+    pts: &[Point2f],
+    seg_cursor: &mut usize,
+    y_lo: f32,
+    y_center: f32,
+    y_hi: f32,
+) -> (f32, f32, f32) {
+    let last_idx = pts.len().saturating_sub(1);
+    while *seg_cursor < last_idx && pts[*seg_cursor + 1].y < y_lo {
+        *seg_cursor += 1;
+    }
+
+    let x_lo = sample_polyline_at_y(pts, *seg_cursor, y_lo);
+    let x_center = sample_polyline_at_y(pts, *seg_cursor, y_center);
+    let x_hi = sample_polyline_at_y(pts, *seg_cursor, y_hi);
+
+    let mut x_min = x_lo.min(x_center).min(x_hi);
+    let mut x_max = x_lo.max(x_center).max(x_hi);
+
+    let mut idx = *seg_cursor;
+    while idx <= last_idx && pts[idx].y <= y_hi {
+        if pts[idx].y >= y_lo {
+            x_min = x_min.min(pts[idx].x);
+            x_max = x_max.max(pts[idx].x);
+        }
+        idx += 1;
+    }
+
+    (x_center, x_min, x_max)
+}
+
 #[inline]
-fn rasterize_lobe_segment(
-    p0: Point2f,
-    p1: Point2f,
-    baseline_x: f32,
+fn sample_polyline_at_y(pts: &[Point2f], start_idx: usize, y_target: f32) -> f32 {
+    if pts.is_empty() {
+        return 0.0;
+    }
+    if y_target <= pts[0].y {
+        return pts[0].x;
+    }
+    let last = pts.len() - 1;
+    if y_target >= pts[last].y {
+        return pts[last].x;
+    }
+    let mut i = start_idx.min(last.saturating_sub(1));
+    while i + 1 < pts.len() && pts[i + 1].y < y_target {
+        i += 1;
+    }
+    let p0 = pts[i];
+    let p1 = pts[(i + 1).min(last)];
+    let dy = p1.y - p0.y;
+    if dy.abs() <= MIN_AMP_EPSILON {
+        0.5 * (p0.x + p1.x)
+    } else {
+        let t = ((y_target - p0.y) / dy).clamp(0.0, 1.0);
+        p0.x + t * (p1.x - p0.x)
+    }
+}
+
+fn rasterize_trace_lobes(
+    trace: &TraceWiggleGeometry,
     max_x: f32,
     max_y: f32,
     width: usize,
+    height: usize,
     params: &WiggleRenderParams,
     out_rgba: &mut [u8],
 ) {
-    let y_min = p0.y.min(p1.y).clamp(0.0, max_y).ceil() as usize;
-    let y_max = p0.y.max(p1.y).clamp(0.0, max_y).floor() as usize;
-    if y_min > y_max {
+    let pts = &trace.polyline;
+    if pts.len() < 2 || height == 0 || width == 0 {
         return;
     }
-    let dy = p1.y - p0.y;
-    for y in y_min..=y_max {
+    let baseline_x = trace.baseline_x.clamp(0.0, max_x);
+    let y_start = pts[0].y.clamp(0.0, max_y).floor() as usize;
+    let y_end = pts[pts.len() - 1]
+        .y
+        .clamp(0.0, max_y)
+        .ceil()
+        .min((height - 1) as f32) as usize;
+
+    let mut seg_cursor = 0_usize;
+    for y in y_start..=y_end {
         let y_f = y as f32;
-        let x_curve = if dy.abs() <= MIN_AMP_EPSILON {
-            p0.x
-        } else {
-            let t = ((y_f - p0.y) / dy).clamp(0.0, 1.0);
-            p0.x + t * (p1.x - p0.x)
-        };
-        let dx = x_curve - baseline_x;
-        if dx > ZERO_CROSSING_EPSILON && params.fill_mode.fills_positive() {
-            let x_start = baseline_x.clamp(0.0, max_x).round() as usize;
-            let x_end = x_curve.clamp(0.0, max_x).round() as usize;
-            fill_horizontal_span(
+        let y_lo = (y_f - 0.5).max(0.0);
+        let y_hi = (y_f + 0.5).min(max_y);
+        let (x_center, x_min, x_max) =
+            evaluate_polyline_band(pts, &mut seg_cursor, y_lo, y_f, y_hi);
+        let dx_center = x_center - baseline_x;
+
+        if dx_center > ZERO_CROSSING_EPSILON && params.fill_mode.fills_positive() {
+            let x_right = x_max.max(x_center).clamp(baseline_x, max_x);
+            fill_antialiased_span(
                 out_rgba,
                 width,
+                height,
                 y,
-                x_start,
-                x_end,
+                baseline_x,
+                x_right,
                 params.positive_fill_rgba,
             );
-        } else if dx < -ZERO_CROSSING_EPSILON && params.fill_mode.fills_negative() {
-            let x_start = x_curve.clamp(0.0, max_x).round() as usize;
-            let x_end = baseline_x.clamp(0.0, max_x).round() as usize;
-            fill_horizontal_span(
+        } else if dx_center < -ZERO_CROSSING_EPSILON && params.fill_mode.fills_negative() {
+            let x_left = x_min.min(x_center).clamp(0.0, baseline_x);
+            fill_antialiased_span(
                 out_rgba,
                 width,
+                height,
                 y,
-                x_start,
-                x_end,
+                x_left,
+                baseline_x,
                 params.negative_fill_rgba,
             );
         }
     }
 }
 
-#[inline]
-fn fill_horizontal_span(
-    out_rgba: &mut [u8],
+#[allow(clippy::too_many_arguments)]
+fn rasterize_trace_stroke(
+    trace: &TraceWiggleGeometry,
+    trace_spacing_px: f32,
+    max_x: f32,
+    max_y: f32,
     width: usize,
-    y: usize,
-    x0: usize,
-    x1: usize,
-    color: [u8; 4],
+    height: usize,
+    line_color: [u8; 4],
+    out_rgba: &mut [u8],
 ) {
-    let start = x0.min(x1);
-    let end = x0.max(x1).min(width.saturating_sub(1));
-    if start > end {
+    let pts = &trace.polyline;
+    if pts.is_empty() || height == 0 || width == 0 {
         return;
     }
-    let row_offset = y * width * 4;
-    let span_bytes = &mut out_rgba[row_offset + start * 4..row_offset + (end + 1) * 4];
-    for px in span_bytes.as_chunks_mut::<4>().0 {
-        *px = color;
+    if pts.len() == 1 {
+        let p = pts[0];
+        plot_pixel(
+            out_rgba,
+            width,
+            height,
+            p.x.round() as i32,
+            p.y.round() as i32,
+            line_color,
+        );
+        return;
+    }
+
+    let baseline_x = trace.baseline_x.clamp(0.0, max_x);
+    let density_alpha = if trace_spacing_px >= 14.0 {
+        1.0
+    } else {
+        (trace_spacing_px / 14.0).clamp(0.42, 1.0)
+    };
+
+    let y_start = pts[0].y.clamp(0.0, max_y).floor() as usize;
+    let y_end = pts[pts.len() - 1]
+        .y
+        .clamp(0.0, max_y)
+        .ceil()
+        .min((height - 1) as f32) as usize;
+
+    let mut seg_cursor = 0_usize;
+    for y in y_start..=y_end {
+        let y_f = y as f32;
+        let y_lo = (y_f - 0.5).max(0.0);
+        let y_hi = (y_f + 0.5).min(max_y);
+        let (x_center, x_min, x_max) =
+            evaluate_polyline_band(pts, &mut seg_cursor, y_lo, y_f, y_hi);
+        let x0 = x_min.clamp(0.0, max_x);
+        let x1 = x_max.clamp(0.0, max_x);
+        let span = (x1 - x0).max(0.0);
+        let excursion = (x_center - baseline_x)
+            .abs()
+            .max((x1 - baseline_x).abs())
+            .max((x0 - baseline_x).abs());
+
+        let mute_factor = if trace_spacing_px < 14.0 && excursion < 0.35 {
+            0.38
+        } else {
+            1.0
+        };
+
+        if span < 0.85 {
+            let px = x_center.round() as i32;
+            blend_pixel(
+                out_rgba,
+                width,
+                height,
+                px,
+                y as i32,
+                line_color,
+                density_alpha * mute_factor,
+            );
+        } else {
+            let slope_alpha =
+                (density_alpha * mute_factor * (1.25 / (1.0 + 0.42 * span))).clamp(0.22, 1.0);
+            let px_start = (x0.floor().max(0.0) as usize).min(width - 1);
+            let px_end = (x1.ceil().max(0.0) as usize).min(width - 1);
+            for px in px_start..=px_end {
+                blend_pixel(
+                    out_rgba,
+                    width,
+                    height,
+                    px as i32,
+                    y as i32,
+                    line_color,
+                    slope_alpha,
+                );
+            }
+        }
+    }
+}
+
+#[inline]
+fn fill_antialiased_span(
+    out_rgba: &mut [u8],
+    width: usize,
+    height: usize,
+    y: usize,
+    x_left: f32,
+    x_right: f32,
+    color: [u8; 4],
+) {
+    let span = x_right - x_left;
+    if span <= 0.05 || width == 0 || y >= height {
+        return;
+    }
+    let start_px = (x_left.floor().max(0.0) as usize).min(width - 1);
+    let end_px = (x_right.floor().max(0.0) as usize).min(width - 1);
+    if start_px == end_px {
+        let cov = span.clamp(0.0, 1.0);
+        blend_pixel(
+            out_rgba,
+            width,
+            height,
+            start_px as i32,
+            y as i32,
+            color,
+            cov,
+        );
+        return;
+    }
+
+    let left_cov = (((start_px + 1) as f32) - x_left).clamp(0.0, 1.0);
+    blend_pixel(
+        out_rgba,
+        width,
+        height,
+        start_px as i32,
+        y as i32,
+        color,
+        left_cov,
+    );
+
+    if start_px < end_px.saturating_sub(1) {
+        let row_offset = y * width * 4;
+        let inner_start = start_px + 1;
+        let inner_end = end_px - 1;
+        let span_bytes =
+            &mut out_rgba[row_offset + inner_start * 4..row_offset + (inner_end + 1) * 4];
+        for px in span_bytes.as_chunks_mut::<4>().0 {
+            *px = color;
+        }
+    }
+
+    let right_cov = (x_right - (end_px as f32)).clamp(0.0, 1.0);
+    if right_cov > 0.02 {
+        blend_pixel(
+            out_rgba,
+            width,
+            height,
+            end_px as i32,
+            y as i32,
+            color,
+            right_cov,
+        );
     }
 }
 
@@ -928,39 +1196,35 @@ fn plot_pixel(out_rgba: &mut [u8], width: usize, height: usize, x: i32, y: i32, 
 }
 
 #[inline]
-fn draw_line_segment(
+fn blend_pixel(
     out_rgba: &mut [u8],
     width: usize,
     height: usize,
-    p0: Point2f,
-    p1: Point2f,
+    x: i32,
+    y: i32,
     color: [u8; 4],
+    alpha: f32,
 ) {
-    let mut x0 = p0.x.round() as i32;
-    let mut y0 = p0.y.round() as i32;
-    let x1 = p1.x.round() as i32;
-    let y1 = p1.y.round() as i32;
-
-    let dx = (x1 - x0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let dy = -(y1 - y0).abs();
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-
-    loop {
-        plot_pixel(out_rgba, width, height, x0, y0, color);
-        if x0 == x1 && y0 == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
-        }
+    if alpha >= 0.999 {
+        plot_pixel(out_rgba, width, height, x, y, color);
+        return;
+    }
+    if x < 0 || y < 0 {
+        return;
+    }
+    let ux = x as usize;
+    let uy = y as usize;
+    if ux >= width || uy >= height {
+        return;
+    }
+    let idx = (uy * width + ux) * 4;
+    if let Some(dst) = out_rgba.get_mut(idx..idx + 4) {
+        let a = alpha.clamp(0.0, 1.0);
+        let inv_a = 1.0 - a;
+        dst[0] = ((color[0] as f32) * a + (dst[0] as f32) * inv_a).round() as u8;
+        dst[1] = ((color[1] as f32) * a + (dst[1] as f32) * inv_a).round() as u8;
+        dst[2] = ((color[2] as f32) * a + (dst[2] as f32) * inv_a).round() as u8;
+        dst[3] = 255;
     }
 }
 
