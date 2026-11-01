@@ -14,6 +14,8 @@ pub mod amplitude;
 pub mod colormap;
 pub mod error;
 pub mod image;
+pub mod png;
+pub mod section;
 pub mod viewport;
 pub mod wiggle;
 
@@ -32,6 +34,11 @@ pub use image::{
     DecimationMode, ImageRenderParams, ImageRenderer, ImageViewport, MAX_VIEWPORT_DIMENSION,
     RenderedImage, SliceTraceSource, TraceDataSource, render_image, render_image_into,
     resample_trace_vertical_into, sample_bin_minmax, select_decimated_amplitude,
+};
+pub use png::{PNG_SIGNATURE, decode_rgba_png, encode_rgba_png, load_rgba_png, save_rgba_png};
+pub use section::{
+    DEFAULT_MIN_WIGGLE_SPACING_PX, RenderLod, SectionRenderParams, SectionRenderer,
+    render_section_image, render_section_into,
 };
 pub use viewport::{
     AxisTick, CursorReadout, DEFAULT_AUTO_SWITCH_TRACE_SPACING_PX, DisplayMode, SectionDataBounds,

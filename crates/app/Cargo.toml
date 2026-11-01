@@ -8,6 +8,8 @@ license.workspace = true
 segy-core.workspace = true
 render.workspace = true
 thiserror.workspace = true
+eframe.workspace = true
+rfd.workspace = true
 
 [lints]
 workspace = true

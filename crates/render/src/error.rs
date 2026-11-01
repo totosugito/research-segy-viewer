@@ -57,4 +57,12 @@ pub enum RenderError {
         /// Viewport height in pixels.
         height: u32,
     },
+
+    /// I/O error while reading or writing an offscreen PNG file.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Invalid or corrupted PNG data.
+    #[error("PNG error: {0}")]
+    Png(String),
 }
