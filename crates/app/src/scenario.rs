@@ -74,6 +74,8 @@ pub enum ScenarioStepKind {
     PolarityReversed,
     /// Step 10: Reverse horizontal trace order (right-to-left).
     ReverseTraces,
+    /// Step 10b: Show extra X label rows (CDP, FFID, Offset) above the section.
+    AxisLabelRows,
     /// Step 11: Switch X-axis header key to CDP / Ensemble and fit full section in Overlay mode.
     XAxisKeyCdp,
     /// Step 12: Save PNG snapshot to `refs/out/smoke_section.png` and verify non-blank output.
@@ -82,7 +84,7 @@ pub enum ScenarioStepKind {
 
 impl ScenarioStepKind {
     /// Complete ordered step sequence for [`ScenarioName::Smoke`].
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::OpenInitialImage,
         Self::SwitchModeWiggle,
         Self::SwitchModeOverlay,
@@ -95,6 +97,7 @@ impl ScenarioStepKind {
         Self::ColormapSeismic,
         Self::PolarityReversed,
         Self::ReverseTraces,
+        Self::AxisLabelRows,
         Self::XAxisKeyCdp,
         Self::SavePngRefsOut,
     ];
@@ -115,6 +118,7 @@ impl ScenarioStepKind {
             Self::ColormapSeismic => "colormap_seismic",
             Self::PolarityReversed => "polarity_reversed",
             Self::ReverseTraces => "reverse_traces",
+            Self::AxisLabelRows => "axis_label_rows",
             Self::XAxisKeyCdp => "xaxis_key_cdp",
             Self::SavePngRefsOut => "save_png_refs_out",
         }
@@ -239,6 +243,26 @@ impl ScenarioStepKind {
                 Ok(format!(
                     "reverse_traces={}",
                     ctrl.viewport().reverse_traces()
+                ))
+            }
+            Self::AxisLabelRows => {
+                ctrl.set_extra_axis_keys(&[
+                    AxisHeaderKey::Cdp,
+                    AxisHeaderKey::FieldRecord,
+                    AxisHeaderKey::Offset,
+                ]);
+                let rows = ctrl.extra_axis_label_rows(90.0);
+                if rows.len() != 3 || rows.iter().any(|(_, labels)| labels.is_empty()) {
+                    return Err(AppError::ScenarioFailed(
+                        "extra X label rows produced no labels".to_string(),
+                    ));
+                }
+                Ok(format!(
+                    "x_label_rows={} first_labels={:?}",
+                    rows.len() + 1,
+                    rows.iter()
+                        .filter_map(|(_, l)| l.first().map(|(_, t)| t.clone()))
+                        .collect::<Vec<_>>()
                 ))
             }
             Self::XAxisKeyCdp => {

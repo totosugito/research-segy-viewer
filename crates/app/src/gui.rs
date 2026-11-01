@@ -16,26 +16,103 @@ use render::{
 use segy_core::AxisHeaderKey;
 
 use crate::cli::AppCliArgs;
-use crate::controller::AppController;
+use crate::controller::{AppController, MAX_AXIS_LABEL_ROWS};
 use crate::scenario::{
     ScenarioDriver, ScenarioReport, ScenarioStepKind, evaluate_step_outcome, format_panic_payload,
 };
 
 const TOP_AXIS_MARGIN_PX: f32 = 34.0;
+/// Extra top margin per additional X label row.
+const AXIS_ROW_HEIGHT_PX: f32 = 14.0;
+/// Default 1-based SEG-Y byte used when a row is switched to a custom `i32` header field.
+const DEFAULT_CUSTOM_BYTE: usize = 21;
 const LEFT_AXIS_MARGIN_PX: f32 = 64.0;
 const RIGHT_MARGIN_PX: f32 = 12.0;
 const BOTTOM_MARGIN_PX: f32 = 10.0;
 
-///Selectable horizontal axis header keys exposed in the UI combo box.
-const AXIS_KEY_OPTIONS: [(AxisHeaderKey, &str); 7] = [
-    (AxisHeaderKey::TraceNumber, "Trace #"),
-    (AxisHeaderKey::SequenceLine, "Seq Line"),
-    (AxisHeaderKey::FieldRecord, "Field Record"),
-    (AxisHeaderKey::Cdp, "CDP / Ensemble"),
-    (AxisHeaderKey::Offset, "Offset"),
-    (AxisHeaderKey::Inline, "Inline"),
-    (AxisHeaderKey::Crossline, "Crossline"),
+/// Selectable horizontal axis header keys exposed in the UI combo boxes:
+/// `(key, long label, short row title)`.
+const AXIS_KEY_OPTIONS: [(AxisHeaderKey, &str, &str); 8] = [
+    (AxisHeaderKey::TraceNumber, "Trace #", "Trace#"),
+    (AxisHeaderKey::SequenceLine, "Seq Line", "SeqLine"),
+    (AxisHeaderKey::SequenceFile, "Seq File", "SeqFile"),
+    (AxisHeaderKey::FieldRecord, "Field Record", "FFID"),
+    (AxisHeaderKey::Cdp, "CDP / Ensemble", "CDP"),
+    (AxisHeaderKey::Offset, "Offset", "Offset"),
+    (AxisHeaderKey::Inline, "Inline", "Inline"),
+    (AxisHeaderKey::Crossline, "Crossline", "Xline"),
 ];
+
+fn axis_key_label(key: AxisHeaderKey) -> String {
+    if let Some((_, label, _)) = AXIS_KEY_OPTIONS.iter().find(|(k, _, _)| *k == key) {
+        return (*label).to_string();
+    }
+    match key {
+        AxisHeaderKey::CustomI16 { byte_offset } => {
+            format!("Custom i16 @ byte {}", byte_offset + 1)
+        }
+        AxisHeaderKey::CustomI32 { byte_offset } => {
+            format!("Custom i32 @ byte {}", byte_offset + 1)
+        }
+        _ => "Custom".to_string(),
+    }
+}
+
+fn axis_key_short(key: AxisHeaderKey) -> String {
+    if let Some((_, _, short)) = AXIS_KEY_OPTIONS.iter().find(|(k, _, _)| *k == key) {
+        return (*short).to_string();
+    }
+    match key {
+        AxisHeaderKey::CustomI16 { byte_offset } => format!("i16@{}", byte_offset + 1),
+        AxisHeaderKey::CustomI32 { byte_offset } => format!("i32@{}", byte_offset + 1),
+        _ => "Custom".to_string(),
+    }
+}
+
+/// Header-key picker: preset keys plus a custom `i32` field at a user-chosen 1-based byte.
+/// Returns the new key when the user changed it.
+fn axis_key_combo(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    key: AxisHeaderKey,
+) -> (Option<AxisHeaderKey>, egui::Response) {
+    let mut new_key = None;
+    let response = egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(axis_key_label(key))
+        .show_ui(ui, |ui| {
+            for (k, label, _) in AXIS_KEY_OPTIONS {
+                if ui.selectable_label(key == k, label).clicked() {
+                    new_key = Some(k);
+                }
+            }
+            let custom = matches!(
+                key,
+                AxisHeaderKey::CustomI16 { .. } | AxisHeaderKey::CustomI32 { .. }
+            );
+            if ui.selectable_label(custom, "Custom i32 @ byte…").clicked() && !custom {
+                new_key = Some(AxisHeaderKey::CustomI32 {
+                    byte_offset: DEFAULT_CUSTOM_BYTE - 1,
+                });
+            }
+        })
+        .response;
+    if let AxisHeaderKey::CustomI32 { byte_offset } = key {
+        let mut byte = byte_offset + 1;
+        if ui
+            .add(
+                egui::DragValue::new(&mut byte)
+                    .range(1..=237)
+                    .prefix("byte "),
+            )
+            .changed()
+        {
+            new_key = Some(AxisHeaderKey::CustomI32 {
+                byte_offset: byte.clamp(1, 237) - 1,
+            });
+        }
+    }
+    (new_key, response)
+}
 
 /// Thin `eframe::App` wrapper around [`AppController`].
 pub struct SegyViewerApp {
@@ -456,25 +533,54 @@ impl SegyViewerApp {
     fn draw_geometry_section(&mut self, ui: &mut Ui) {
         ui.heading("Axes & Geometry");
         let current_key = self.controller.viewport().horizontal_axis_key();
-        let current_label = AXIS_KEY_OPTIONS
-            .iter()
-            .find(|(k, _)| *k == current_key)
-            .map_or("Custom", |(_, l)| *l);
 
         ui.horizontal(|ui| {
             let xaxis_label = ui.label("X-Axis:");
-            egui::ComboBox::from_id_salt("xaxis_key_combo")
-                .selected_text(current_label)
-                .show_ui(ui, |ui| {
-                    for (key, label) in AXIS_KEY_OPTIONS {
-                        if ui.selectable_label(current_key == key, label).clicked() {
-                            self.controller.set_horizontal_axis_key(key);
-                        }
-                    }
-                })
-                .response
-                .labelled_by(xaxis_label.id);
+            let (changed, response) = axis_key_combo(ui, "xaxis_key_combo", current_key);
+            response.labelled_by(xaxis_label.id);
+            if let Some(key) = changed {
+                self.controller.set_horizontal_axis_key(key);
+            }
         });
+
+        let extras: Vec<AxisHeaderKey> = self.controller.extra_axis_keys().to_vec();
+        ui.label(format!(
+            "X label rows: {} / {}",
+            extras.len() + 1,
+            MAX_AXIS_LABEL_ROWS
+        ));
+        let mut remove_row = None;
+        for (i, key) in extras.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let row_label = ui.label(format!("Row {}:", i + 2));
+                let (changed, response) = axis_key_combo(ui, ("extra_axis_key_combo", i), *key);
+                response.labelled_by(row_label.id);
+                if let Some(new_key) = changed {
+                    self.controller.set_extra_axis_key(i, new_key);
+                }
+                if ui
+                    .small_button("Del")
+                    .on_hover_text("Remove this label row")
+                    .clicked()
+                {
+                    remove_row = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove_row {
+            self.controller.remove_extra_axis_key(i);
+        }
+        if extras.len() + 1 < MAX_AXIS_LABEL_ROWS && ui.button("+ Add label row").clicked() {
+            let used: Vec<AxisHeaderKey> = std::iter::once(current_key)
+                .chain(extras.iter().copied())
+                .collect();
+            let next = AXIS_KEY_OPTIONS
+                .iter()
+                .map(|(k, _, _)| *k)
+                .find(|k| !used.contains(k))
+                .unwrap_or(AxisHeaderKey::Cdp);
+            self.controller.add_extra_axis_key(next);
+        }
 
         let mut decimate = self.controller.viewport().trace_decimate_step();
         if ui
@@ -563,7 +669,9 @@ impl SegyViewerApp {
         }
 
         let plot_left = (avail.min.x + LEFT_AXIS_MARGIN_PX).min(avail.max.x - 16.0);
-        let plot_top = (avail.min.y + TOP_AXIS_MARGIN_PX).min(avail.max.y - 16.0);
+        let top_margin = TOP_AXIS_MARGIN_PX
+            + AXIS_ROW_HEIGHT_PX * self.controller.extra_axis_keys().len() as f32;
+        let plot_top = (avail.min.y + top_margin).min(avail.max.y - 16.0);
         let plot_right = (avail.max.x - RIGHT_MARGIN_PX).max(plot_left + 16.0);
         let plot_bottom = (avail.max.y - BOTTOM_MARGIN_PX).max(plot_top + 16.0);
         let plot_rect = Rect::from_min_max(
@@ -813,13 +921,49 @@ impl SegyViewerApp {
             );
         }
 
-        // Corner axis unit label
+        // Row titles in the left margin: primary X-axis row, then each extra row stacked above.
+        let title_color = Color32::from_rgb(160, 170, 185);
         painter.text(
             Pos2::new(plot_rect.min.x - 8.0, plot_rect.min.y - 8.0),
             Align2::RIGHT_BOTTOM,
+            axis_key_short(self.controller.viewport().horizontal_axis_key()),
+            font.clone(),
+            title_color,
+        );
+        let dim_label = Color32::from_rgb(190, 200, 215);
+        for (row, (key, labels)) in self
+            .controller
+            .extra_axis_label_rows(90.0)
+            .iter()
+            .enumerate()
+        {
+            let y = plot_rect.min.y - 8.0 - AXIS_ROW_HEIGHT_PX * (row as f32 + 1.0);
+            painter.text(
+                Pos2::new(plot_rect.min.x - 8.0, y),
+                Align2::RIGHT_BOTTOM,
+                axis_key_short(*key),
+                font.clone(),
+                title_color,
+            );
+            for (x_local, text) in labels {
+                let x = (plot_rect.min.x + x_local).clamp(plot_rect.min.x, plot_rect.max.x);
+                painter.text(
+                    Pos2::new(x, y),
+                    Align2::CENTER_BOTTOM,
+                    text,
+                    font.clone(),
+                    dim_label,
+                );
+            }
+        }
+
+        // Time axis unit label
+        painter.text(
+            Pos2::new(plot_rect.min.x - 8.0, plot_rect.min.y + 13.0),
+            Align2::RIGHT_BOTTOM,
             "Time (ms)",
             font,
-            Color32::from_rgb(160, 170, 185),
+            title_color,
         );
     }
 

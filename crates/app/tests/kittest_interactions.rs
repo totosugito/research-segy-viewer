@@ -438,3 +438,35 @@ fn kittest_rectangle_zoom_and_trace_selection_with_mouse() -> Result<()> {
     assert!(h.state().controller().selected_trace().is_none());
     Ok(())
 }
+
+#[test]
+fn kittest_add_and_remove_extra_x_label_rows_up_to_five() -> Result<()> {
+    let mut h = build_harness_with_sample()?;
+    h.run();
+    assert!(h.state().controller().extra_axis_keys().is_empty());
+
+    // Primary + 4 extras = 5 rows maximum; the add button disappears at the cap.
+    for expected in 1..=4 {
+        h.get_by_label("+ Add label row").click();
+        h.run();
+        assert_eq!(h.state().controller().extra_axis_keys().len(), expected);
+    }
+    assert!(h.query_by_label("+ Add label row").is_none());
+
+    // Added rows pick distinct, unused keys.
+    let keys = h.state().controller().extra_axis_keys().to_vec();
+    for (i, k) in keys.iter().enumerate() {
+        assert!(!keys[i + 1..].contains(k));
+        assert_ne!(*k, h.state().controller().viewport().horizontal_axis_key());
+    }
+
+    // Removing a row brings the add button back.
+    h.get_all_by_label("Del")
+        .next()
+        .map(|n| n.click())
+        .ok_or(app::AppError::NoFileLoaded)?;
+    h.run();
+    assert_eq!(h.state().controller().extra_axis_keys().len(), 3);
+    assert!(h.query_by_label("+ Add label row").is_some());
+    Ok(())
+}

@@ -21,6 +21,9 @@ pub const DEFAULT_VIEWPORT_WIDTH: u32 = 1000;
 /// Default initial viewport canvas height in pixels.
 pub const DEFAULT_VIEWPORT_HEIGHT: u32 = 680;
 
+/// Maximum number of horizontal axis label rows (the primary X-axis plus extra rows).
+pub const MAX_AXIS_LABEL_ROWS: usize = 5;
+
 /// Rubber-band rectangles smaller than this (in pixels, either axis) are ignored.
 pub const MIN_ZOOM_BOX_PX: f32 = 6.0;
 
@@ -68,6 +71,7 @@ pub struct AppController {
     renderer: SectionRenderer,
     last_cursor: Option<CursorReadout>,
     selected_trace: Option<TraceSelection>,
+    extra_axis_keys: Vec<AxisHeaderKey>,
     last_error: Option<String>,
     status_message: Option<String>,
     state_revision: u64,
@@ -106,6 +110,7 @@ impl AppController {
             renderer: SectionRenderer::new(),
             last_cursor: None,
             selected_trace: None,
+            extra_axis_keys: Vec::new(),
             last_error: None,
             status_message: None,
             state_revision: 1,
@@ -486,6 +491,75 @@ impl AppController {
         if self.viewport.horizontal_axis_key() != key {
             self.viewport.set_horizontal_axis_key(key);
         }
+    }
+
+    /// Header keys of the extra label rows drawn above the primary X-axis (at most
+    /// `MAX_AXIS_LABEL_ROWS - 1`).
+    pub fn extra_axis_keys(&self) -> &[AxisHeaderKey] {
+        &self.extra_axis_keys
+    }
+
+    /// Replaces the extra label rows, keeping at most `MAX_AXIS_LABEL_ROWS - 1` of them.
+    pub fn set_extra_axis_keys(&mut self, keys: &[AxisHeaderKey]) {
+        self.extra_axis_keys = keys.iter().copied().take(MAX_AXIS_LABEL_ROWS - 1).collect();
+    }
+
+    /// Appends an extra label row. Returns `false` when all `MAX_AXIS_LABEL_ROWS` rows are used.
+    pub fn add_extra_axis_key(&mut self, key: AxisHeaderKey) -> bool {
+        if self.extra_axis_keys.len() + 1 >= MAX_AXIS_LABEL_ROWS {
+            return false;
+        }
+        self.extra_axis_keys.push(key);
+        true
+    }
+
+    /// Changes the header key of extra row `row`. Returns `false` for an unknown row.
+    pub fn set_extra_axis_key(&mut self, row: usize, key: AxisHeaderKey) -> bool {
+        match self.extra_axis_keys.get_mut(row) {
+            Some(slot) => {
+                *slot = key;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Removes extra row `row`. Returns `false` for an unknown row.
+    pub fn remove_extra_axis_key(&mut self, row: usize) -> bool {
+        if row < self.extra_axis_keys.len() {
+            self.extra_axis_keys.remove(row);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Labels for every extra axis row: `(key, [(x_px, label)])`, positioned at the primary
+    /// axis ticks so all rows line up. Unreadable header values show as `–`.
+    pub fn extra_axis_label_rows(
+        &self,
+        target_spacing_px: f32,
+    ) -> Vec<(AxisHeaderKey, Vec<(f32, String)>)> {
+        let Some(file) = self.file.as_deref() else {
+            return Vec::new();
+        };
+        let ticks = self.trace_axis_ticks(target_spacing_px);
+        self.extra_axis_keys
+            .iter()
+            .map(|&key| {
+                let labels = ticks
+                    .iter()
+                    .filter_map(|t| {
+                        let idx = t.trace_index?;
+                        let text = file
+                            .trace_axis_value(idx, key)
+                            .map_or_else(|_| "–".to_string(), |v| v.to_string());
+                        Some((t.position_px, text))
+                    })
+                    .collect();
+                (key, labels)
+            })
+            .collect()
     }
 
     /// Sets the visible vertical time window in milliseconds.
@@ -1085,6 +1159,46 @@ mod tests {
         assert!(!ctrl.select_trace(100));
         ctrl.clear_selection();
         assert!(ctrl.selected_trace().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn extra_axis_label_rows_are_capped_and_aligned_with_primary_ticks() -> Result<()> {
+        let mut ctrl = AppController::new(400, 100);
+        assert!(ctrl.extra_axis_label_rows(90.0).is_empty());
+        ctrl.set_segy_file(make_synthetic_segy(100, 50)?, None);
+
+        assert!(ctrl.add_extra_axis_key(AxisHeaderKey::Cdp));
+        assert!(ctrl.add_extra_axis_key(AxisHeaderKey::FieldRecord));
+        assert!(ctrl.add_extra_axis_key(AxisHeaderKey::Offset));
+        assert!(ctrl.add_extra_axis_key(AxisHeaderKey::CustomI32 { byte_offset: 20 }));
+        // Primary + 4 extras = MAX_AXIS_LABEL_ROWS; the 5th extra is refused.
+        assert!(!ctrl.add_extra_axis_key(AxisHeaderKey::Inline));
+        assert_eq!(ctrl.extra_axis_keys().len(), MAX_AXIS_LABEL_ROWS - 1);
+
+        let primary = ctrl.trace_axis_ticks(90.0);
+        let rows = ctrl.extra_axis_label_rows(90.0);
+        assert_eq!(rows.len(), 4);
+        for (_, labels) in &rows {
+            assert_eq!(labels.len(), primary.len());
+            for ((x, _), tick) in labels.iter().zip(&primary) {
+                assert!((*x - tick.position_px).abs() < 1e-3);
+            }
+        }
+        // CDP header is 1000 + 10 * trace index in the synthetic file.
+        let first_idx = primary.first().and_then(|t| t.trace_index).unwrap_or(0);
+        assert_eq!(rows[0].1[0].1, (1000 + first_idx * 10).to_string());
+        // Custom i32 at byte offset 20 is the same CDP field.
+        assert_eq!(rows[3].1[0].1, rows[0].1[0].1);
+
+        assert!(ctrl.set_extra_axis_key(1, AxisHeaderKey::Crossline));
+        assert!(!ctrl.set_extra_axis_key(9, AxisHeaderKey::Crossline));
+        assert!(ctrl.remove_extra_axis_key(0));
+        assert!(!ctrl.remove_extra_axis_key(9));
+        assert_eq!(ctrl.extra_axis_keys().len(), 3);
+
+        ctrl.set_extra_axis_keys(&[AxisHeaderKey::Cdp; 9]);
+        assert_eq!(ctrl.extra_axis_keys().len(), MAX_AXIS_LABEL_ROWS - 1);
         Ok(())
     }
 
