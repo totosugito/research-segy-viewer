@@ -827,11 +827,26 @@ impl SegyViewerApp {
         let Some(x_local) = self.controller.selected_trace_pixel_x() else {
             return;
         };
+        let cyan = Color32::from_rgb(70, 220, 255);
         let x = plot_rect.min.x + x_local;
+        // Faint baseline so the selected trace's position stays readable.
         painter.line_segment(
             [Pos2::new(x, plot_rect.min.y), Pos2::new(x, plot_rect.max.y)],
-            Stroke::new(1.5, Color32::from_rgb(70, 220, 255)),
+            Stroke::new(0.5, Color32::from_rgba_unmultiplied(70, 220, 255, 90)),
         );
+        if let Some(wave) = self.controller.selected_trace_waveform() {
+            let points: Vec<Pos2> = wave
+                .iter()
+                .map(|&(wx, wy)| Pos2::new(plot_rect.min.x + wx, plot_rect.min.y + wy))
+                .collect();
+            let painter = painter.with_clip_rect(plot_rect);
+            // Dark halo first so the curve stays visible over both light and dark data.
+            painter.add(egui::Shape::line(
+                points.clone(),
+                Stroke::new(3.5, Color32::from_rgba_unmultiplied(0, 0, 0, 170)),
+            ));
+            painter.add(egui::Shape::line(points, Stroke::new(1.5, cyan)));
+        }
     }
 
     fn paint_zoom_box(&self, ctx: &Context, painter: &egui::Painter, plot_rect: Rect) {

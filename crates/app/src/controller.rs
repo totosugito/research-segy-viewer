@@ -39,6 +39,8 @@ pub struct TraceSelection {
     pub max: f32,
     /// Root-mean-square raw sample amplitude.
     pub rms: f32,
+    /// Raw samples of the selected trace (used to draw its waveform).
+    pub samples: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -579,13 +581,12 @@ impl AppController {
         }
         let (mut min, mut max, mut sum_sq, mut n) =
             (f32::INFINITY, f32::NEG_INFINITY, 0.0_f64, 0_u64);
-        if let Ok(samples) = file.read_trace_samples(trace_index) {
-            for v in samples.into_iter().filter(|v| v.is_finite()) {
-                min = min.min(v);
-                max = max.max(v);
-                sum_sq += f64::from(v) * f64::from(v);
-                n += 1;
-            }
+        let samples = file.read_trace_samples(trace_index).unwrap_or_default();
+        for v in samples.iter().copied().filter(|v| v.is_finite()) {
+            min = min.min(v);
+            max = max.max(v);
+            sum_sq += f64::from(v) * f64::from(v);
+            n += 1;
         }
         let (min, max, rms) = if n == 0 {
             (0.0, 0.0, 0.0)
@@ -599,6 +600,7 @@ impl AppController {
             min,
             max,
             rms,
+            samples,
         });
         true
     }
@@ -639,6 +641,67 @@ impl AppController {
                 .pan_traces((next + 1) as f64 - range.end as f64);
             self.mark_dirty();
         }
+    }
+
+    /// Waveform of the selected trace as viewport-local `(x, y)` pixel points, following the
+    /// trace's amplitude around its own baseline (wiggle-style, positive to the right).
+    ///
+    /// Amplitude is normalised to min(peak, 3×RMS) of the trace and spans `±half-width`, where the
+    /// half-width follows the trace spacing (clamped to 14–48 px) so it stays legible when
+    /// traces are dense. Dense sample runs are reduced to min/max per pixel row.
+    pub fn selected_trace_waveform(&self) -> Option<Vec<(f32, f32)>> {
+        let sel = self.selected_trace.as_ref()?;
+        let center_x = self.selected_trace_pixel_x()?;
+        let range = self.viewport.visible_sample_range();
+        // Scale to ~3x RMS (not the absolute peak) so ordinary reflections stay legible;
+        // isolated spikes simply clip at the edge of the band.
+        let peak = sel.min.abs().max(sel.max.abs()).min(3.0 * sel.rms);
+        if range.is_empty() || sel.samples.is_empty() || peak <= 0.0 {
+            return None;
+        }
+        let half = (self.viewport.trace_spacing_px() * 1.5).clamp(14.0, 48.0);
+        let sign = match self.render_params.amplitude.polarity {
+            Polarity::Normal => 1.0,
+            Polarity::Reversed => -1.0,
+        };
+        let bounds = self.viewport.bounds();
+        let end = range.end.min(sel.samples.len());
+        let mut points: Vec<(f32, f32)> = Vec::new();
+        let mut row: Option<(i32, f32, f32)> = None; // (pixel row, min amp, max amp)
+        let flush = |points: &mut Vec<(f32, f32)>, row: (i32, f32, f32)| {
+            let y = row.0 as f32;
+            let to_x = |a: f32| center_x + sign * (a / peak).clamp(-1.0, 1.0) * half;
+            points.push((to_x(row.1), y));
+            if row.2 > row.1 {
+                points.push((to_x(row.2), y));
+            }
+        };
+        for s in range.start..end {
+            let amp = sel.samples[s];
+            if !amp.is_finite() {
+                continue;
+            }
+            let y_px = self
+                .viewport
+                .time_ms_to_pixel_y(bounds.sample_to_time_ms(s as f64));
+            let r = y_px.round() as i32;
+            match &mut row {
+                Some((cur, lo, hi)) if *cur == r => {
+                    *lo = lo.min(amp);
+                    *hi = hi.max(amp);
+                }
+                _ => {
+                    if let Some(done) = row.take() {
+                        flush(&mut points, done);
+                    }
+                    row = Some((r, amp, amp));
+                }
+            }
+        }
+        if let Some(done) = row {
+            flush(&mut points, done);
+        }
+        (points.len() >= 2).then_some(points)
     }
 
     /// Viewport-local x pixel of the selected trace, if it is inside the visible trace range.
@@ -989,6 +1052,24 @@ mod tests {
         assert!(sel.max > sel.min && sel.rms > 0.0);
         assert_eq!(sel.header.map(|h| h.ensemble_number), Some(1000 + 25 * 10));
         assert!(ctrl.selected_trace_pixel_x().is_some());
+
+        // The highlight follows the trace waveform instead of a straight line.
+        let wave = ctrl
+            .selected_trace_waveform()
+            .ok_or(AppError::NoFileLoaded)?;
+        let cx = ctrl
+            .selected_trace_pixel_x()
+            .ok_or(AppError::NoFileLoaded)?;
+        let (lo, hi) = wave
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p.0), h.max(p.0)));
+        assert!(hi - lo > 4.0, "waveform must have width, got {lo}..{hi}");
+        assert!(lo >= cx - 48.1 && hi <= cx + 48.1);
+        assert!(
+            wave.windows(2).all(|w| w[1].1 >= w[0].1),
+            "y must not go back"
+        );
+        assert!(wave.len() <= 2 * 100 + 2, "decimated to <=2 points per row");
 
         // Clicking the same trace toggles off.
         assert_eq!(ctrl.click_select_at_pixel(50.0), None);
