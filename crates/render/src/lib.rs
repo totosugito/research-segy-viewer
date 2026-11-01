@@ -11,7 +11,9 @@
 //! Pure headless seismic trace rendering (amplitude pipeline, variable-density image, wiggle paths).
 
 pub mod amplitude;
+pub mod colormap;
 pub mod error;
+pub mod image;
 
 pub use amplitude::{
     AgcConfig, AmplitudeParams, AmplitudeScratch, ClipStrategy, MIN_AMP_EPSILON, NormScope,
@@ -22,7 +24,13 @@ pub use amplitude::{
     process_trace_in_place, process_trace_with_scratch, remove_dc_in_place, sanitize_sample,
     trace_max_abs, trace_mean, trace_mean_abs, trace_rms,
 };
+pub use colormap::{ColormapConfig, ColormapKind, ColormapLut, LUT_SIZE_256, LUT_SIZE_4096};
 pub use error::{RenderError, Result};
+pub use image::{
+    DecimationMode, ImageRenderParams, ImageRenderer, ImageViewport, MAX_VIEWPORT_DIMENSION,
+    RenderedImage, SliceTraceSource, TraceDataSource, render_image, render_image_into,
+    resample_trace_vertical_into, sample_bin_minmax, select_decimated_amplitude,
+};
 
 /// Readiness check for the headless render crate.
 pub fn render_ready() -> bool {
