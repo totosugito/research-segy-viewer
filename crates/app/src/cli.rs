@@ -13,6 +13,23 @@ pub const DEFAULT_SNAPSHOT_WIDTH: u32 = 1200;
 /// Default snapshot image height in pixels.
 pub const DEFAULT_SNAPSHOT_HEIGHT: u32 = 800;
 
+/// Named automated UI scenario supported by `--scenario` / `--scenario-fast`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenarioName {
+    /// End-to-end smoke scenario (modes, zoom H/V, pan, gain, colormap, polarity, reverse traces, x-axis key, Save PNG).
+    Smoke,
+}
+
+impl ScenarioName {
+    /// Canonical lowercase CLI name of the scenario.
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+        }
+    }
+}
+
 /// Parsed CLI options for the main interactive viewer binary (`app [OPTIONS] [FILE.sgy]`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AppCliArgs {
@@ -26,6 +43,10 @@ pub struct AppCliArgs {
     pub colormap: Option<ColormapKind>,
     /// Optional initial display polarity (`normal` or `reversed`).
     pub polarity: Option<Polarity>,
+    /// Optional automated scenario to execute (`--scenario smoke` or `--scenario-fast`).
+    pub scenario: Option<ScenarioName>,
+    /// Whether the automated scenario runs without inter-step pauses (`--scenario-fast`).
+    pub scenario_fast: bool,
 }
 
 impl AppCliArgs {
@@ -36,7 +57,7 @@ impl AppCliArgs {
         S: AsRef<str>,
     {
         let mut parsed = Self::default();
-        let mut iter = args.into_iter();
+        let mut iter = args.into_iter().peekable();
 
         while let Some(raw) = iter.next() {
             let arg = raw.as_ref();
@@ -56,6 +77,21 @@ impl AppCliArgs {
                 "--polarity" | "-p" => {
                     let val = next_value(&mut iter, arg)?;
                     parsed.polarity = Some(parse_polarity(&val)?);
+                }
+                "--scenario" => {
+                    let val = next_value(&mut iter, arg)?;
+                    parsed.scenario = Some(parse_scenario_name(&val)?);
+                }
+                "--scenario-fast" => {
+                    parsed.scenario_fast = true;
+                    if let Some(next_peek) = iter.peek()
+                        && let Ok(name) = parse_scenario_name(next_peek.as_ref())
+                    {
+                        let _ = iter.next();
+                        parsed.scenario = Some(name);
+                    } else if parsed.scenario.is_none() {
+                        parsed.scenario = Some(ScenarioName::Smoke);
+                    }
                 }
                 other if other.starts_with('-') => {
                     return Err(AppError::InvalidArgument(format!(
@@ -228,6 +264,16 @@ pub fn parse_polarity(value: &str) -> Result<Polarity> {
     }
 }
 
+/// Parses an automated scenario name (`smoke`).
+pub fn parse_scenario_name(value: &str) -> Result<ScenarioName> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "smoke" => Ok(ScenarioName::Smoke),
+        other => Err(AppError::InvalidArgument(format!(
+            "unknown scenario '{other}' (expected smoke)"
+        ))),
+    }
+}
+
 fn next_value<I, S>(iter: &mut I, flag: &str) -> Result<String>
 where
     I: Iterator<Item = S>,
@@ -345,7 +391,28 @@ mod tests {
         assert!(AppCliArgs::parse_from(["--unknown"]).is_err());
         assert!(AppCliArgs::parse_from(["--mode"]).is_err());
         assert!(AppCliArgs::parse_from(["--mode", "3d"]).is_err());
+        assert!(AppCliArgs::parse_from(["--scenario"]).is_err());
+        assert!(AppCliArgs::parse_from(["--scenario", "invalid"]).is_err());
         assert!(SnapshotCliArgs::parse_from(["only_one_path.sgy"]).is_err());
         assert!(SnapshotCliArgs::parse_from(["a.sgy", "b.png", "--width", "0"]).is_err());
+    }
+
+    #[test]
+    fn app_cli_parses_scenario_smoke_and_scenario_fast() -> Result<()> {
+        let live = AppCliArgs::parse_from(["sample.sgy", "--scenario", "smoke"])?;
+        assert_eq!(live.file_path, Some(PathBuf::from("sample.sgy")));
+        assert_eq!(live.scenario, Some(ScenarioName::Smoke));
+        assert!(!live.scenario_fast);
+
+        let fast_flag = AppCliArgs::parse_from(["sample.sgy", "--scenario-fast"])?;
+        assert_eq!(fast_flag.file_path, Some(PathBuf::from("sample.sgy")));
+        assert_eq!(fast_flag.scenario, Some(ScenarioName::Smoke));
+        assert!(fast_flag.scenario_fast);
+
+        let fast_named = AppCliArgs::parse_from(["--scenario-fast", "smoke", "sample.sgy"])?;
+        assert_eq!(fast_named.file_path, Some(PathBuf::from("sample.sgy")));
+        assert_eq!(fast_named.scenario, Some(ScenarioName::Smoke));
+        assert!(fast_named.scenario_fast);
+        Ok(())
     }
 }

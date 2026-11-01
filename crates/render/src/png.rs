@@ -355,28 +355,35 @@ fn adler32(data: &[u8]) -> u32 {
     (s2 << 16) | s1
 }
 
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            if (c & 1) != 0 {
+                c = (c >> 1) ^ 0xEDB8_8320;
+            } else {
+                c >>= 1;
+            }
+            bit += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+};
+
 fn crc32_chunk(chunk_type: [u8; 4], data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &b in &chunk_type {
-        crc = update_crc32_byte(crc, b);
+        crc = (crc >> 8) ^ CRC32_TABLE[((crc as u8) ^ b) as usize];
     }
     for &b in data {
-        crc = update_crc32_byte(crc, b);
+        crc = (crc >> 8) ^ CRC32_TABLE[((crc as u8) ^ b) as usize];
     }
     !crc
-}
-
-#[inline]
-fn update_crc32_byte(crc: u32, byte: u8) -> u32 {
-    let mut c = crc ^ u32::from(byte);
-    for _ in 0..8 {
-        if (c & 1) != 0 {
-            c = (c >> 1) ^ 0xEDB8_8320;
-        } else {
-            c >>= 1;
-        }
-    }
-    c
 }
 
 #[cfg(test)]

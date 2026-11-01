@@ -1,6 +1,10 @@
 //! Thin `egui` / `eframe` user interface delegating all parsing, viewport geometry,
 //! and progressive rendering to [`AppController`], `render`, and `segy_core`.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use eframe::egui::{
     self, Align2, Color32, ColorImage, Context, CornerRadius, FontId, Pos2, Rect, Sense, Stroke,
     StrokeKind, TextureHandle, TextureOptions, Ui, Vec2,
@@ -13,6 +17,9 @@ use segy_core::AxisHeaderKey;
 
 use crate::cli::AppCliArgs;
 use crate::controller::AppController;
+use crate::scenario::{
+    ScenarioDriver, ScenarioReport, ScenarioStepKind, evaluate_step_outcome, format_panic_payload,
+};
 
 const TOP_AXIS_MARGIN_PX: f32 = 34.0;
 const LEFT_AXIS_MARGIN_PX: f32 = 64.0;
@@ -38,13 +45,26 @@ pub struct SegyViewerApp {
     show_sidebar: bool,
     show_headers_window: bool,
     show_grid: bool,
+    scenario_driver: Option<ScenarioDriver>,
 }
 
 impl SegyViewerApp {
     /// Creates a new [`SegyViewerApp`] initialized with optional CLI arguments.
     pub fn new(args: AppCliArgs) -> Self {
+        let report = Arc::new(Mutex::new(ScenarioReport::default()));
+        Self::new_with_scenario_report(args, report)
+    }
+
+    /// Creates a new [`SegyViewerApp`] sharing `scenario_report` when `--scenario` or `--scenario-fast` is set.
+    pub fn new_with_scenario_report(
+        args: AppCliArgs,
+        scenario_report: Arc<Mutex<ScenarioReport>>,
+    ) -> Self {
         let mut controller = AppController::default();
         let _ = controller.apply_cli_args(&args);
+        let scenario_driver = args
+            .scenario
+            .map(|name| ScenarioDriver::new(name, args.scenario_fast, scenario_report));
         Self {
             controller,
             texture: None,
@@ -52,7 +72,22 @@ impl SegyViewerApp {
             show_sidebar: true,
             show_headers_window: false,
             show_grid: true,
+            scenario_driver,
         }
+    }
+
+    /// Overrides the per-step frame time budget in milliseconds for the active scenario runner.
+    pub fn set_scenario_max_frame_ms(&mut self, max_frame_ms: f64) {
+        if let Some(driver) = &mut self.scenario_driver {
+            driver.set_max_frame_ms(max_frame_ms);
+        }
+    }
+
+    /// Returns a snapshot of the current [`ScenarioReport`] if a scenario is active.
+    pub fn scenario_report(&self) -> Option<ScenarioReport> {
+        self.scenario_driver
+            .as_ref()
+            .map(ScenarioDriver::report_snapshot)
     }
 
     /// Returns a shared reference to the underlying [`AppController`].
@@ -500,8 +535,14 @@ impl SegyViewerApp {
         let plot_h = (plot_rect.height().round().max(1.0)) as u32;
         self.controller.set_viewport_dimensions(plot_w, plot_h);
 
-        if self.controller.poll_background_render() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(8));
+        if self.scenario_driver.is_some() {
+            if let Err(err) = self.controller.render_full_now()
+                && let Some(driver) = &self.scenario_driver
+            {
+                driver.record_fatal_error(err.to_string());
+            }
+        } else if self.controller.poll_background_render() {
+            ctx.request_repaint_after(Duration::from_millis(8));
         }
         self.sync_texture_if_needed(ctx);
 
@@ -735,6 +776,14 @@ impl SegyViewerApp {
 
     /// Renders the complete application UI for a single frame into `ui`.
     pub fn draw_ui(&mut self, ui: &mut Ui) {
+        if self.scenario_driver.is_some() {
+            self.drive_scenario_frame(ui);
+        } else {
+            self.draw_panels_and_canvas(ui);
+        }
+    }
+
+    fn draw_panels_and_canvas(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         self.handle_dropped_files(&ctx);
 
@@ -760,6 +809,119 @@ impl SegyViewerApp {
         });
 
         self.draw_headers_window(&ctx);
+    }
+
+    fn drive_scenario_frame(&mut self, ui: &mut Ui) {
+        let Some(warmup_done) = self
+            .scenario_driver
+            .as_ref()
+            .map(ScenarioDriver::warmup_done)
+        else {
+            return;
+        };
+
+        if !warmup_done {
+            self.draw_panels_and_canvas(ui);
+            if let Some(driver) = &mut self.scenario_driver {
+                driver.complete_warmup();
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+
+        let (step_idx, due_at, max_frame_ms, pause) = match &self.scenario_driver {
+            Some(d) => (
+                d.next_step_idx(),
+                d.next_step_due(),
+                d.max_frame_ms(),
+                d.step_pause(),
+            ),
+            None => return,
+        };
+        let total = ScenarioStepKind::ALL.len();
+        let now = Instant::now();
+
+        if step_idx >= total {
+            self.draw_panels_and_canvas(ui);
+            if now >= due_at {
+                if let Some(driver) = &self.scenario_driver {
+                    driver.mark_finished();
+                }
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                let wait = due_at
+                    .saturating_duration_since(now)
+                    .min(Duration::from_millis(40));
+                ui.ctx().request_repaint_after(wait);
+            }
+            return;
+        }
+
+        if now < due_at {
+            self.draw_panels_and_canvas(ui);
+            let wait = due_at
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(40));
+            ui.ctx().request_repaint_after(wait);
+            return;
+        }
+
+        self.execute_scenario_step(ui, step_idx, total, max_frame_ms, pause);
+    }
+
+    fn execute_scenario_step(
+        &mut self,
+        ui: &mut Ui,
+        step_idx: usize,
+        total: usize,
+        max_frame_ms: f64,
+        pause: Duration,
+    ) {
+        let step_kind = ScenarioStepKind::ALL[step_idx];
+        let t0 = Instant::now();
+
+        let caught = catch_unwind(AssertUnwindSafe(|| {
+            let detail = step_kind.apply(&mut self.controller)?;
+            self.draw_panels_and_canvas(ui);
+            step_kind.finish_post_render(&mut self.controller)?;
+            Ok(detail)
+        }));
+
+        let frame_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let step_result = match caught {
+            Ok(res) => res,
+            Err(panic_payload) => {
+                let msg = format_panic_payload(panic_payload);
+                Err(crate::error::AppError::ScenarioFailed(format!(
+                    "panic in step '{}': {msg}",
+                    step_kind.name()
+                )))
+            }
+        };
+
+        let record = evaluate_step_outcome(
+            &self.controller,
+            step_idx,
+            total,
+            step_kind,
+            step_result,
+            frame_ms,
+            max_frame_ms,
+        );
+        let passed = record.passed;
+
+        if let Some(driver) = &mut self.scenario_driver {
+            driver.record_step(record);
+            driver.advance_step();
+        }
+
+        if !passed {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if pause.is_zero() {
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_millis(40));
+        }
     }
 }
 

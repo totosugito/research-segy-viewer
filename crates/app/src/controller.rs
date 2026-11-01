@@ -650,6 +650,14 @@ impl AppController {
         self.needs_render() || self.in_flight.is_some()
     }
 
+    /// Invalidates the cached rendered image so the next render pass recomputes from scratch.
+    pub fn invalidate_render_cache(&mut self) {
+        self.rendered_revision = None;
+        self.rendered_lod = None;
+        self.cached_image = None;
+        self.mark_dirty();
+    }
+
     /// Renders the current viewport at full quality offscreen and saves it to `path` as a PNG.
     pub fn save_png(&mut self, path: impl AsRef<Path>) -> Result<RenderedImage> {
         let width = self.viewport.width_px();
@@ -668,12 +676,25 @@ impl AppController {
         let Some(file) = self.file.clone() else {
             return Err(AppError::NoFileLoaded);
         };
-        let mut offscreen_vp = self.viewport.clone();
-        offscreen_vp.set_dimensions(width, height);
-        let params = self.render_params.with_lod(RenderLod::Full);
-        let img = self
-            .renderer
-            .render(file.as_ref(), &offscreen_vp, &params)?;
+        if let Some(parent) = path.as_ref().parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let img = if width == self.viewport.width_px()
+            && height == self.viewport.height_px()
+            && self.rendered_revision == Some(self.state_revision)
+            && self.rendered_lod == Some(RenderLod::Full)
+            && let Some(cached) = &self.cached_image
+        {
+            (**cached).clone()
+        } else {
+            let mut offscreen_vp = self.viewport.clone();
+            offscreen_vp.set_dimensions(width, height);
+            let params = self.render_params.with_lod(RenderLod::Full);
+            self.renderer
+                .render(file.as_ref(), &offscreen_vp, &params)?
+        };
         img.save_png(path.as_ref())?;
         self.status_message = Some(format!(
             "Saved {}×{} PNG to {}",

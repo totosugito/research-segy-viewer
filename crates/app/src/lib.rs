@@ -14,14 +14,20 @@ pub mod cli;
 pub mod controller;
 pub mod error;
 pub mod gui;
+pub mod scenario;
 
 pub use cli::{
-    AppCliArgs, DEFAULT_SNAPSHOT_HEIGHT, DEFAULT_SNAPSHOT_WIDTH, SnapshotCliArgs,
-    parse_colormap_kind, parse_display_mode, parse_polarity,
+    AppCliArgs, DEFAULT_SNAPSHOT_HEIGHT, DEFAULT_SNAPSHOT_WIDTH, ScenarioName, SnapshotCliArgs,
+    parse_colormap_kind, parse_display_mode, parse_polarity, parse_scenario_name,
 };
 pub use controller::{AppController, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH};
 pub use error::{AppError, Result};
 pub use gui::SegyViewerApp;
+pub use scenario::{
+    DEFAULT_SCENARIO_PNG_PATH, DEFAULT_SCENARIO_STEP_PAUSE_MS, SCENARIO_MAX_FRAME_MS,
+    SCENARIO_WARN_FRAME_MS, ScenarioDriver, ScenarioReport, ScenarioStepKind, ScenarioStepRecord,
+    finalize_scenario_report, run_scenario_headless, run_scenario_headless_with_budget,
+};
 
 use render::{ClipStrategy, RenderedImage};
 

@@ -27,4 +27,8 @@ pub enum AppError {
     /// Attempted to render or export when no SEG-Y file is loaded.
     #[error("no SEG-Y file is currently loaded")]
     NoFileLoaded,
+
+    /// Automated scenario runner failure (panic, render error, blank frame, or frame budget exceeded).
+    #[error("scenario failed: {0}")]
+    ScenarioFailed(String),
 }
