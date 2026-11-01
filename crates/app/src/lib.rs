@@ -12,6 +12,7 @@
 
 pub mod cli;
 pub mod controller;
+pub mod demo;
 pub mod error;
 pub mod gui;
 pub mod scenario;
@@ -21,6 +22,7 @@ pub use cli::{
     parse_colormap_kind, parse_display_mode, parse_polarity, parse_scenario_name,
 };
 pub use controller::{AppController, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH};
+pub use demo::{DemoOverlay, DemoStep, demo_steps};
 pub use error::{AppError, Result};
 pub use gui::SegyViewerApp;
 pub use scenario::{

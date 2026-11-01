@@ -17,6 +17,7 @@ use segy_core::AxisHeaderKey;
 
 use crate::cli::AppCliArgs;
 use crate::controller::{AppController, MAX_AXIS_LABEL_ROWS};
+use crate::demo::DemoOverlay;
 use crate::scenario::{
     ScenarioDriver, ScenarioReport, ScenarioStepKind, evaluate_step_outcome, format_panic_payload,
 };
@@ -125,6 +126,7 @@ pub struct SegyViewerApp {
     mouse_tool: MouseTool,
     zoom_box_origin: Option<Pos2>,
     zoom_box_cancelled: bool,
+    demo_overlay: Option<DemoOverlay>,
     scenario_driver: Option<ScenarioDriver>,
 }
 
@@ -164,8 +166,33 @@ impl SegyViewerApp {
             mouse_tool: MouseTool::ZoomBox,
             zoom_box_origin: None,
             zoom_box_cancelled: false,
+            demo_overlay: None,
             scenario_driver,
         }
+    }
+
+    /// Sets (or clears) the demo overlay: caption banner, demo pointer and zoom rectangle.
+    pub fn set_demo_overlay(&mut self, overlay: Option<DemoOverlay>) {
+        self.demo_overlay = overlay;
+    }
+
+    /// Shows or hides the read-only file headers window.
+    pub fn set_show_headers_window(&mut self, show: bool) {
+        self.show_headers_window = show;
+    }
+
+    /// Shows or hides the axis grid lines.
+    pub fn set_show_grid(&mut self, show: bool) {
+        self.show_grid = show;
+    }
+
+    /// Selects what a left-button drag does: pan (`true`) or draw a zoom box (`false`).
+    pub fn set_pan_tool(&mut self, pan: bool) {
+        self.mouse_tool = if pan {
+            MouseTool::Pan
+        } else {
+            MouseTool::ZoomBox
+        };
     }
 
     /// Overrides the per-step frame time budget in milliseconds for the active scenario runner.
@@ -714,6 +741,77 @@ impl SegyViewerApp {
             && plot_rect.contains(hover_pos)
         {
             self.paint_cursor_crosshair(painter, plot_rect, hover_pos);
+        }
+        self.paint_demo_overlay(painter, plot_rect);
+    }
+
+    fn paint_demo_overlay(&mut self, painter: &egui::Painter, plot_rect: Rect) {
+        let Some(ov) = self.demo_overlay.clone() else {
+            return;
+        };
+        let at = |fx: f32, fy: f32| {
+            Pos2::new(
+                plot_rect.min.x + fx * plot_rect.width(),
+                plot_rect.min.y + fy * plot_rect.height(),
+            )
+        };
+        let clip = painter.with_clip_rect(plot_rect);
+        let yellow = Color32::from_rgb(255, 210, 60);
+
+        if let Some((x0, y0, x1, y1)) = ov.zoom_box {
+            let rect = Rect::from_two_pos(at(x0, y0), at(x1, y1));
+            clip.rect_filled(
+                rect,
+                CornerRadius::ZERO,
+                Color32::from_rgba_unmultiplied(255, 210, 60, 36),
+            );
+            clip.rect_stroke(
+                rect,
+                CornerRadius::ZERO,
+                Stroke::new(1.5, yellow),
+                StrokeKind::Inside,
+            );
+        }
+
+        if let Some((fx, fy)) = ov.cursor {
+            self.controller
+                .update_cursor_at_pixel(fx * plot_rect.width(), fy * plot_rect.height());
+            let p = at(fx, fy);
+            if ov.click {
+                clip.circle_stroke(p, 15.0, Stroke::new(2.5, yellow));
+            }
+            clip.add(egui::Shape::convex_polygon(
+                vec![p, p + Vec2::new(0.0, 19.0), p + Vec2::new(13.0, 13.0)],
+                Color32::WHITE,
+                Stroke::new(1.3, Color32::BLACK),
+            ));
+        }
+
+        if !ov.caption.is_empty() {
+            let galley = painter.layout(
+                ov.caption.clone(),
+                FontId::proportional(20.0),
+                Color32::WHITE,
+                plot_rect.width() - 110.0,
+            );
+            let height = galley.size().y + 20.0;
+            let banner = Rect::from_min_max(
+                Pos2::new(plot_rect.min.x, plot_rect.max.y - height),
+                plot_rect.max,
+            );
+            clip.rect_filled(
+                banner,
+                CornerRadius::ZERO,
+                Color32::from_rgba_unmultiplied(8, 10, 14, 228),
+            );
+            clip.galley(banner.min + Vec2::new(14.0, 10.0), galley, Color32::WHITE);
+            clip.text(
+                Pos2::new(banner.max.x - 12.0, banner.min.y + 8.0),
+                Align2::RIGHT_TOP,
+                format!("{} / {}", ov.index, ov.total),
+                FontId::monospace(12.0),
+                Color32::from_rgb(160, 170, 185),
+            );
         }
     }
 
