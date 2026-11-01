@@ -1,0 +1,13 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+segy-core.workspace = true
+render.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

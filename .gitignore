@@ -1,0 +1,7 @@
+/target/
+/refs/
+/.toolchain/
+*.sgy
+*.SGY
+*.segy
+*.SEGY
